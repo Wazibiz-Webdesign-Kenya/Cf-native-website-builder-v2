@@ -444,7 +444,7 @@ async function uploadImportImages() {
     done++;
   }
   input.value = '';
-  flash(done + ' image(s) uploaded and added to the list. Press Save draft to keep them.', false);
+  flash(done + ' image(s) uploaded and added to the list. Press Save images (or Save draft) to keep them.', false);
 }
 async function uploadScreenshot() {
   const input = document.getElementById('screenshot-input');

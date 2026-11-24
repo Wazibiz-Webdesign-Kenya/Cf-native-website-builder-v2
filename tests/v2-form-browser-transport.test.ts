@@ -87,5 +87,8 @@ describe("form browser transport", () => {
     expect(() => new Function(PLATFORM_SITE_SCRIPT)).not.toThrow();
     expect(PLATFORM_SITE_SCRIPT).toContain("wa.me/");
     expect(PLATFORM_SITE_SCRIPT).toContain("stopImmediatePropagation");
+    // Escapes must survive the template literal (a stray "\s" becomes "s").
+    expect(PLATFORM_SITE_SCRIPT).toContain("replace(/\\s+/g");
+    expect(PLATFORM_SITE_SCRIPT).toContain("header .brand");
   });
 });

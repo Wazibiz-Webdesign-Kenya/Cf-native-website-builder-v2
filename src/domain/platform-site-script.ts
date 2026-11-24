@@ -32,8 +32,13 @@ export const PLATFORM_SITE_SCRIPT = `
     function businessName() {
       var og = doc.querySelector('meta[property="og:site_name"]');
       if (og && og.content) return og.content.trim();
+      // The header logo/brand text is the most reliable name on a generated
+      // site; a <title> tagline ("Brand | Garden Venue in Ngong") is not.
+      var logo = doc.querySelector('header .brand, header .logo, header .site-logo, header a[href="/"], header a[href="index.html"], .brand, .logo');
+      var logoText = logo && logo.textContent ? logo.textContent.replace(/\\s+/g, ' ').trim() : '';
+      if (logoText && logoText.length <= 60) return logoText;
       var parts = (doc.title || '').split(/\\s+[|\\u2013\\u2014-]\\s+/);
-      return (parts[parts.length - 1] || '').trim();
+      return (parts[0] || '').trim();
     }
 
     function waNumber(href) {
@@ -54,7 +59,7 @@ export const PLATFORM_SITE_SCRIPT = `
       var explicit = link.getAttribute('data-wa-text');
       if (explicit) return explicit;
       if (link.closest('header, nav, footer')) return '';
-      var scope = link.closest('section, article, li, [class*="card"]');
+      var scope = link.closest('article, li, [class*="card"]');
       var heading = scope && scope.querySelector('h1, h2, h3');
       var label = heading && heading.textContent ? heading.textContent.replace(/\\s+/g, ' ').trim() : '';
       return label && label.length <= 80 ? label : '';
@@ -111,9 +116,9 @@ export const PLATFORM_SITE_SCRIPT = `
       if (status.scrollIntoView) status.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }
 
-    function composeWhatsApp(data) {
+    function composeWhatsApp(data, sent) {
       if (!number) return null;
-      var lines = [intro() + ' I just sent an enquiry through your website.'];
+      var lines = [intro() + (sent ? ' I just sent an enquiry through your website.' : " I'd like to make an enquiry.")];
       var skip = { siteFormId: 1, message: 1 };
       for (var key in data) {
         if (!Object.prototype.hasOwnProperty.call(data, key) || skip[key] || !data[key]) continue;
@@ -148,7 +153,8 @@ export const PLATFORM_SITE_SCRIPT = `
       var button = form.querySelector('[type="submit"]');
       if (button) button.disabled = true;
 
-      var waHref = composeWhatsApp(data);
+      var waSent = composeWhatsApp(data, true);
+      var waUnsent = composeWhatsApp(data, false);
       fetch(form.getAttribute('action'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -156,12 +162,12 @@ export const PLATFORM_SITE_SCRIPT = `
       }).then(function (response) {
         if (response.status === 202) {
           form.reset();
-          show('Thank you - your enquiry was sent. We will get back to you shortly.', waHref, false);
+          show('Thank you - your enquiry was sent. We will get back to you shortly.', waSent, false);
         } else {
-          show('Sorry, we could not send your enquiry just now.' + (waHref ? ' You can send it on WhatsApp instead.' : ' Please try again or call us.'), waHref, true);
+          show('Sorry, we could not send your enquiry just now.' + (waUnsent ? ' You can send it on WhatsApp instead.' : ' Please try again or call us.'), waUnsent, true);
         }
       }).catch(function () {
-        show('Sorry, we could not reach the server.' + (waHref ? ' You can send your enquiry on WhatsApp instead.' : ' Please try again or call us.'), waHref, true);
+        show('Sorry, we could not reach the server.' + (waUnsent ? ' You can send your enquiry on WhatsApp instead.' : ' Please try again or call us.'), waUnsent, true);
       }).then(function () {
         if (button) button.disabled = false;
       });
