@@ -19,7 +19,7 @@ import { createBuildForSiteGeneration } from "./routes/v2.build-create";
 import { startBuildPipeline } from "./routes/v2.pipeline-start";
 import { getBuild } from "./routes/v2.build-get";
 import { createRevisionRequest, getRevisionRequest } from "./routes/v2.revision-request";
-import { submitForm } from "./routes/v2.form-submit";
+import { preflightForm, submitForm } from "./routes/v2.form-submit";
 import { createApproval } from "./routes/v2.approval-create";
 import { createPublication } from "./routes/v2.publication-create";
 import { rollbackSitePublication } from "./routes/v2.rollback";
@@ -46,6 +46,7 @@ app.get("/api/v2/builds/:buildId", getBuild);
 app.post("/api/v2/builds/:buildId/revision-requests", createRevisionRequest);
 app.get("/api/v2/builds/:buildId/revision-requests/latest", getRevisionRequest);
 app.post("/api/v2/forms/submit", submitForm);
+app.on("OPTIONS", "/api/v2/forms/submit", preflightForm);
 // Operator release actions: all gated by offline-minted, action-bound
 // capability tokens (issues #29 and #31); they deny by default when
 // OPERATOR_CAPABILITY_SECRET is unset.

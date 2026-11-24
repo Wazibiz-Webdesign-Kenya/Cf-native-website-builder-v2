@@ -314,6 +314,20 @@ function collectPayload() {
   var logo = document.getElementById('logo-url').value.trim(); if (logo) payload.business.logoUrl = logo;
   var diff = document.getElementById('differentiator').value.trim(); if (diff) payload.business.competitiveDifferentiator = diff;
   var refUrl = document.getElementById('reference-url').value.trim(); payload.referenceUrl = refUrl || null;
+  var importLines = document.getElementById('image-import').value.split('\\n').map(function (l) { return l.trim(); }).filter(Boolean);
+  if (importLines.length) {
+    var pages = ['home', 'about', 'services', 'contact'];
+    payload.imageImport = {
+      policy: document.getElementById('image-import-policy').value,
+      images: importLines.map(function (line) {
+        var parts = line.split('|').map(function (x) { return x.trim(); });
+        var entry = { url: parts[0] };
+        if (parts[1] && pages.indexOf(parts[1].toLowerCase()) >= 0) entry.page = parts[1].toLowerCase();
+        if (parts[2]) entry.alt = parts[2];
+        return entry;
+      })
+    };
+  } else { payload.imageImport = null; }
   return payload;
 }
 async function saveDraft(markInReview) {
@@ -557,6 +571,13 @@ async function IntakeEditorPage(c: Context<{ Bindings: Env }>, draft: IntakeDraf
               {textField("whatsapp", "WhatsApp", business.whatsappNumber ?? "", "tel")}
               {textField("logo-url", "Logo URL (optional)", business.logoUrl ?? "", "url")}
             </div>
+            <label for="image-import">Imported images (optional) — one per line: https://… | page (home/about/services/contact, optional) | alt text (optional)</label>
+            <textarea id="image-import" style={{ "min-height": "5rem" }}>{(draft.payload.imageImport?.images ?? []).map((i) => i.url + (i.page || i.alt ? " | " + (i.page ?? "") : "") + (i.alt ? " | " + i.alt : "")).join("\n")}</textarea>
+            <label for="image-import-policy">When imported images don't cover every slot</label>
+            <select id="image-import-policy">
+              <option value="IMPORTED_THEN_GENERATE" selected={(draft.payload.imageImport?.policy ?? "IMPORTED_THEN_GENERATE") === "IMPORTED_THEN_GENERATE"}>Generate the remaining images with AI</option>
+              <option value="IMPORTED_ONLY" selected={draft.payload.imageImport?.policy === "IMPORTED_ONLY"}>No AI images — reuse the imported ones</option>
+            </select>
             <label for="business-description">Business description</label>
             <textarea id="business-description">{business.businessDescription ?? ""}</textarea>
             <label for="differentiator">Competitive differentiator (optional)</label>

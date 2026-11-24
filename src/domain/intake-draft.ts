@@ -18,6 +18,7 @@ import { Value } from "@sinclair/typebox/value";
 import { generateId, nowIso } from "../lib/crypto";
 import {
   BusinessFactsSchema,
+  ImageImportSchema,
   OnboardingSubmissionPayloadSchema,
   validateBusinessFactsSemantics,
   validateOnboardingSubmissionPayload,
@@ -86,6 +87,8 @@ export const IntakeDraftPayloadSchema = Type.Object(
     // submission can never place an R2 key here.
     referenceScreenshotR2Key: Type.Optional(Type.String({ minLength: 1, maxLength: 512 })),
     referenceUrl: Type.Optional(Type.String({ pattern: "^https?://", maxLength: 2048 })),
+    // Admin-supplied imported images (skip/limit AI image generation).
+    imageImport: Type.Optional(ImageImportSchema),
   },
   { additionalProperties: false }
 );
@@ -307,6 +310,8 @@ export interface DraftEditInput {
   business?: IntakeDraftPayload["business"];
   designPreferences?: IntakeDraftPayload["designPreferences"];
   referenceUrl?: string | null;
+  /** Imported images; null clears them. */
+  imageImport?: IntakeDraftPayload["imageImport"] | null;
   adminNotes?: string | null;
   /** Marks the draft as being reviewed by an admin (SUBMITTED -> IN_REVIEW). */
   markInReview?: boolean;
@@ -330,6 +335,10 @@ export async function editIntakeDraft(
   const nextPayload: IntakeDraftPayload = JSON.parse(JSON.stringify(draft.payload));
   if (edit.business !== undefined) nextPayload.business = edit.business;
   if (edit.designPreferences !== undefined) nextPayload.designPreferences = edit.designPreferences;
+  if (edit.imageImport !== undefined) {
+    if (edit.imageImport === null) delete nextPayload.imageImport;
+    else nextPayload.imageImport = edit.imageImport;
+  }
   if (edit.referenceUrl !== undefined) {
     if (edit.referenceUrl === null) delete nextPayload.referenceUrl;
     else nextPayload.referenceUrl = edit.referenceUrl;
@@ -463,6 +472,8 @@ export function buildCanonicalSubmissionPayload(
     }
     candidate.reference = reference;
   }
+
+  if (draft.payload.imageImport) candidate.imageImport = draft.payload.imageImport;
 
   const check = validateOnboardingSubmissionPayload(candidate);
   if (!check.valid) return check;

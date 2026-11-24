@@ -192,6 +192,8 @@ export async function startSiteGeneration(
     facts,
     reference,
     ...(creativeDirection ? { creativeDirection } : {}),
+    // Absent stays absent: submissions without imports keep their checksum.
+    ...(payload.imageImport ? { imageImport: payload.imageImport } : {}),
   });
   const checksum = await sha256Hex(frozenPayload);
   const submittedAt = nowIso();
