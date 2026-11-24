@@ -14,6 +14,8 @@ import {
   uploadDraftReferenceScreenshot,
   validateAndGenerateDraft,
   regenerateDraft,
+  putDraftImageImport,
+  uploadDraftImportImage,
   getDraft,
   listDrafts,
 } from "../src/routes/admin-api";
@@ -60,6 +62,8 @@ function fullApp(env: Env): Hono<{ Bindings: Env }> {
   app.post("/api/admin/intake-drafts/:draftId/reference-screenshot", uploadDraftReferenceScreenshot);
   app.post("/api/admin/intake-drafts/:draftId/validate-and-generate", validateAndGenerateDraft);
   app.post("/api/admin/intake-drafts/:draftId/regenerate", regenerateDraft);
+  app.put("/api/admin/intake-drafts/:draftId/image-import", putDraftImageImport);
+  app.post("/api/admin/intake-drafts/:draftId/import-image", uploadDraftImportImage);
   return app;
 }
 
@@ -505,5 +509,60 @@ describe("admin draft review, edit and conversion", () => {
       .bind(draftId)
       .first<{ n: number }>();
     expect(generations?.n).toBe(1);
+  });
+
+  it("images attached AFTER conversion reach the next (recovery) generation only; uploads land under imports/drafts", async () => {
+    const env = runtimeEnv(vi.fn(async () => ({ id: "w-img" })));
+    const draftId = await createDraftViaPublicForm(env, "Late Images Gardens");
+    const app = fullApp(env);
+    const converted = await app.request(`https://test.example.com/api/admin/intake-drafts/${draftId}/validate-and-generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...ACCESS_HEADERS },
+      body: JSON.stringify({ buildMode: "ORIGINAL_DESIGN", creativeDirection: { direction: "Warm garden editorial" } }),
+    }, env);
+    expect(converted.status).toBe(201);
+    const first = (await converted.json()) as { onboardingSubmissionId: string; siteGenerationId: string };
+
+    // Upload a real PNG from "the operator's PC", then attach it with a URL entry.
+    const upload = await app.request(`https://test.example.com/api/admin/intake-drafts/${draftId}/import-image`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...ACCESS_HEADERS },
+      body: JSON.stringify({ filename: "Lawn View.png", contentBase64: tinyPngBase64() }),
+    }, env);
+    expect(upload.status).toBe(201);
+    const { r2Key } = (await upload.json()) as { r2Key: string };
+    expect(r2Key.startsWith(`imports/drafts/${draftId}/`) && r2Key.endsWith("-Lawn_View.png")).toBe(true);
+
+    const notImage = await app.request(`https://test.example.com/api/admin/intake-drafts/${draftId}/import-image`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...ACCESS_HEADERS },
+      body: JSON.stringify({ filename: "x.png", contentBase64: btoa("<html>not an image</html>") }),
+    }, env);
+    expect(notImage.status).toBe(400);
+
+    const saved = await app.request(`https://test.example.com/api/admin/intake-drafts/${draftId}/image-import`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", ...ACCESS_HEADERS },
+      body: JSON.stringify({ imageImport: { policy: "IMPORTED_THEN_GENERATE", images: [{ r2Key }, { url: "https://img.example/a.jpg", page: "home" }] } }),
+    }, env);
+    expect(saved.status).toBe(200);
+
+    // Recovery needs a gated latest build (canonical event writer).
+    const { createInitialBuild, appendBuildWorkflowEvent } = await import("../src/domain/lifecycle");
+    const initial = await createInitialBuild(env, { siteGenerationId: first.siteGenerationId });
+    await appendBuildWorkflowEvent(env, { buildId: initial.buildId, fromState: "CONFIRMATION", toState: "HUMAN_REVIEW_REQUIRED", stage: "simple_final_qa", detail: "gated" });
+    const regen = await app.request(`https://test.example.com/api/admin/intake-drafts/${draftId}/regenerate`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...ACCESS_HEADERS },
+      body: "{}",
+    }, env);
+    expect(regen.status).toBe(201);
+    const second = (await regen.json()) as { recovered: { siteGenerationId: string } };
+    const secondSubmissionId = (await env.DB.prepare("SELECT onboarding_submission_id FROM site_generations WHERE id = ?").bind(second.recovered.siteGenerationId).first<{ onboarding_submission_id: string }>())!.onboarding_submission_id;
+
+    const payloadOf = async (id: string) =>
+      JSON.parse((await env.DB.prepare("SELECT payload_json FROM onboarding_submissions WHERE id = ?").bind(id).first<{ payload_json: string }>())!.payload_json) as { imageImport?: { images: unknown[] } };
+    expect((await payloadOf(first.onboardingSubmissionId)).imageImport).toBeUndefined();
+    expect((await payloadOf(secondSubmissionId)).imageImport?.images).toHaveLength(2);
   });
 });

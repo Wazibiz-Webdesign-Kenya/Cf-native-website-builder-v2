@@ -4,6 +4,7 @@ import { requireCloudflareAccess } from "../domain/admin-access";
 import {
   IntakeDraftError,
   editIntakeDraft,
+  setDraftImageImport,
   getIntakeDraft,
   listIntakeDrafts,
   regenerateFromDraft,
@@ -126,6 +127,28 @@ export async function uploadDraftImportImage(c: Context<{ Bindings: Env }>): Pro
   const r2Key = `imports/drafts/${draftId}/${Date.now()}-${safeName}.${extension}`;
   await c.env.SITE_BUCKET.put(r2Key, bytes);
   return c.json({ r2Key }, 201);
+}
+
+export async function putDraftImageImport(c: Context<{ Bindings: Env }>): Promise<Response> {
+  const denied = await guard(c);
+  if (denied) return denied;
+  let body: { imageImport?: unknown };
+  try {
+    body = (await c.req.json()) as { imageImport?: unknown };
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+  try {
+    const draft = await setDraftImageImport(
+      c.env,
+      c.req.param("draftId") as string,
+      (body.imageImport ?? null) as never
+    );
+    return c.json({ draft });
+  } catch (error) {
+    if (error instanceof IntakeDraftError) return draftErrorResponse(error);
+    throw error;
+  }
 }
 
 export async function uploadDraftReferenceScreenshot(c: Context<{ Bindings: Env }>): Promise<Response> {
@@ -303,6 +326,7 @@ export function registerAdminApiRoutes(app: Hono<{ Bindings: Env }>): void {
   app.patch("/api/admin/intake-drafts/:draftId", patchDraft);
   app.post("/api/admin/intake-drafts/:draftId/reference-screenshot", uploadDraftReferenceScreenshot);
   app.post("/api/admin/intake-drafts/:draftId/import-image", uploadDraftImportImage);
+  app.put("/api/admin/intake-drafts/:draftId/image-import", putDraftImageImport);
   app.post("/api/admin/intake-drafts/:draftId/validate-and-generate", validateAndGenerateDraft);
   app.post("/api/admin/intake-drafts/:draftId/regenerate", regenerateDraft);
   app.get("/api/admin/sites/:siteId", getSiteReview);

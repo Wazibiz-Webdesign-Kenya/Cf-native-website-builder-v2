@@ -325,20 +325,7 @@ function collectPayload() {
   var logo = document.getElementById('logo-url').value.trim(); if (logo) payload.business.logoUrl = logo;
   var diff = document.getElementById('differentiator').value.trim(); if (diff) payload.business.competitiveDifferentiator = diff;
   var refUrl = document.getElementById('reference-url').value.trim(); payload.referenceUrl = refUrl || null;
-  var importLines = document.getElementById('image-import').value.split('\\n').map(function (l) { return l.trim(); }).filter(Boolean);
-  if (importLines.length) {
-    var pages = ['home', 'about', 'services', 'contact'];
-    payload.imageImport = {
-      policy: document.getElementById('image-import-policy').value,
-      images: importLines.map(function (line) {
-        var parts = line.split('|').map(function (x) { return x.trim(); });
-        var entry = parts[0].indexOf('r2:') === 0 ? { r2Key: parts[0].slice(3) } : { url: parts[0] };
-        if (parts[1] && pages.indexOf(parts[1].toLowerCase()) >= 0) entry.page = parts[1].toLowerCase();
-        if (parts[2]) entry.alt = parts[2];
-        return entry;
-      })
-    };
-  } else { payload.imageImport = null; }
+  payload.imageImport = collectImageImport();
   return payload;
 }
 async function saveDraft(markInReview) {
@@ -416,6 +403,27 @@ function modeChanged() {
   document.getElementById('od-panel').classList.toggle('hidden', mode !== 'ORIGINAL_DESIGN');
   document.getElementById('rb-panel').classList.toggle('hidden', mode !== 'REFERENCE_BOUND');
   document.getElementById('generate-btn').disabled = !mode;
+}
+function collectImageImport() {
+  var lines = document.getElementById('image-import').value.split('\\n').map(function (l) { return l.trim(); }).filter(Boolean);
+  if (!lines.length) return null;
+  var pages = ['home', 'about', 'services', 'contact'];
+  return {
+    policy: document.getElementById('image-import-policy').value,
+    images: lines.map(function (line) {
+      var parts = line.split('|').map(function (x) { return x.trim(); });
+      var entry = parts[0].indexOf('r2:') === 0 ? { r2Key: parts[0].slice(3) } : { url: parts[0] };
+      if (parts[1] && pages.indexOf(parts[1].toLowerCase()) >= 0) entry.page = parts[1].toLowerCase();
+      if (parts[2]) entry.alt = parts[2];
+      return entry;
+    })
+  };
+}
+async function saveImageImport() {
+  var response = await fetch(API + '/image-import', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ imageImport: collectImageImport() }) });
+  var result = await response.json().catch(function () { return null; });
+  if (!response.ok) { flash('Saving images failed: ' + extractError(result, 'HTTP ' + response.status), true); return; }
+  flash('Images saved. They will be used by the next generation (press Start new generation).', false);
 }
 async function uploadImportImages() {
   var input = document.getElementById('image-import-files');
@@ -534,6 +542,21 @@ async function IntakeEditorPage(c: Context<{ Bindings: Env }>, draft: IntakeDraf
           ) : null}
           {recoveryOpen ? (
             <>
+              <h3 style={{ margin: "1rem 0 0.25rem" }}>Images for the next generation</h3>
+            <label for="image-import">Imported images (optional) — one per line: https://… (or an uploaded r2: entry) | page (home/about/services/contact, optional) | alt text (optional)</label>
+            <textarea id="image-import" style={{ "min-height": "5rem" }}>{(draft.payload.imageImport?.images ?? []).map((i) => ("r2Key" in i ? "r2:" + i.r2Key : i.url) + (i.page || i.alt ? " | " + (i.page ?? "") : "") + (i.alt ? " | " + i.alt : "")).join("\n")}</textarea>
+            <div class="field">
+              <label for="image-import-files">…or import from your computer (PNG / JPEG / WebP, up to 8 MB each)</label>
+              <input type="file" id="image-import-files" accept="image/png,image/jpeg,image/webp" multiple />
+              <button type="button" class="secondary" onclick="uploadImportImages()">Upload selected images</button>
+            </div>
+            <label for="image-import-policy">When imported images don't cover every slot</label>
+            <select id="image-import-policy">
+              <option value="IMPORTED_THEN_GENERATE" selected={(draft.payload.imageImport?.policy ?? "IMPORTED_THEN_GENERATE") === "IMPORTED_THEN_GENERATE"}>Generate the remaining images with AI</option>
+              <option value="IMPORTED_ONLY" selected={draft.payload.imageImport?.policy === "IMPORTED_ONLY"}>No AI images — reuse the imported ones</option>
+            </select>
+            <button type="button" class="secondary" onclick="saveImageImport()">Save images</button>
+
               <p style={{ margin: "0.75rem 0 0" }}>
                 The latest build ended <strong>{latestBuildState}</strong> with no publishable release. Recovery starts a
                 NEW generation on this same site and Build Mode from a fresh immutable submission built from this draft's

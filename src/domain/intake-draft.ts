@@ -317,6 +317,35 @@ export interface DraftEditInput {
   markInReview?: boolean;
 }
 
+/**
+ * Imported images are the ONE draft field that stays editable after
+ * conversion: they are assets (not facts or design origin) and are consumed by
+ * the NEXT generation (recovery) built from this draft's payload. Already-built
+ * generations are unaffected — their frozen submission is never rewritten.
+ */
+export async function setDraftImageImport(
+  env: Env,
+  id: string,
+  imageImport: IntakeDraftPayload["imageImport"] | null
+): Promise<IntakeDraft> {
+  const draft = await getIntakeDraft(env, id);
+  if (!draft) throw new IntakeDraftError("DRAFT_NOT_FOUND", `Intake Draft ${id} does not exist`);
+  const nextPayload: IntakeDraftPayload = JSON.parse(JSON.stringify(draft.payload));
+  if (imageImport === null) delete nextPayload.imageImport;
+  else nextPayload.imageImport = imageImport;
+  const validated = validateIntakeDraftPayload(nextPayload);
+  if (!validated.valid) {
+    throw new IntakeDraftError(
+      "DRAFT_INVALID",
+      `Image import rejected: ${validated.issues.map((i) => `${i.path} ${i.message}`).join("; ")}`
+    );
+  }
+  await env.DB.prepare("UPDATE client_intake_drafts SET payload_json = ?, updated_at = ? WHERE id = ?")
+    .bind(JSON.stringify(nextPayload), nowIso(), id)
+    .run();
+  return (await getIntakeDraft(env, id))!;
+}
+
 /** Admin edit BEFORE conversion. After Validate & Generate the draft is immutable. */
 export async function editIntakeDraft(
   env: Env,
