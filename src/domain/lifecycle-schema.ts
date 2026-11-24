@@ -199,17 +199,21 @@ export type BusinessFacts = Static<typeof BusinessFactsSchema>;
 // generation budget. They are assets, not Business Facts: they never enter
 // fact prompts as claims.
 export const IMPORTED_IMAGES_MAX = 24;
-export const ImportedImageSchema = Type.Object(
-  {
-    url: Type.String({ pattern: "^https://", maxLength: 2048 }),
-    // Optional placement hint; without it the pipeline matches by orientation.
-    page: Type.Optional(
-      Type.Union([Type.Literal("home"), Type.Literal("about"), Type.Literal("services"), Type.Literal("contact")])
-    ),
-    alt: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
-  },
-  { additionalProperties: false }
-);
+// Each entry is EITHER a remote https URL OR a file uploaded through the admin
+// endpoint (stored under imports/drafts/ in our own R2 — never expires, unlike
+// signed social-media CDN links).
+const ImportedImagePlacement = {
+  // Optional placement hint; without it the pipeline matches by orientation.
+  page: Type.Optional(
+    Type.Union([Type.Literal("home"), Type.Literal("about"), Type.Literal("services"), Type.Literal("contact")])
+  ),
+  alt: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+};
+export const IMPORTED_UPLOAD_KEY_PATTERN = "^imports/drafts/[A-Za-z0-9._/-]{1,300}$";
+export const ImportedImageSchema = Type.Union([
+  Type.Object({ url: Type.String({ pattern: "^https://", maxLength: 2048 }), ...ImportedImagePlacement }, { additionalProperties: false }),
+  Type.Object({ r2Key: Type.String({ pattern: IMPORTED_UPLOAD_KEY_PATTERN, maxLength: 400 }), ...ImportedImagePlacement }, { additionalProperties: false }),
+]);
 export type ImportedImage = Static<typeof ImportedImageSchema>;
 
 export const IMAGE_IMPORT_POLICIES = ["IMPORTED_THEN_GENERATE", "IMPORTED_ONLY"] as const;

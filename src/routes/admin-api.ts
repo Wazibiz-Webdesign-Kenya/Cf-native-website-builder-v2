@@ -91,6 +91,43 @@ export async function patchDraft(c: Context<{ Bindings: Env }>): Promise<Respons
   }
 }
 
+/** Upload one image from the operator's PC to be imported into this draft's
+ *  generation. Stored under imports/drafts/ in our own R2; the caller adds the
+ *  returned key to the draft's imageImport list. PNG/JPEG/WebP by magic bytes. */
+export async function uploadDraftImportImage(c: Context<{ Bindings: Env }>): Promise<Response> {
+  const denied = await guard(c);
+  if (denied) return denied;
+  const draftId = c.req.param("draftId") as string;
+  if (!(await getIntakeDraft(c.env, draftId))) return c.json({ error: "Draft not found" }, 404);
+  let body: { filename?: unknown; contentBase64?: unknown };
+  try {
+    body = (await c.req.json()) as { filename?: unknown; contentBase64?: unknown };
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+  const contentBase64 = typeof body.contentBase64 === "string" ? body.contentBase64 : "";
+  const filename = typeof body.filename === "string" ? body.filename : "image";
+  if (contentBase64.length === 0 || contentBase64.length > 12 * 1024 * 1024) {
+    return c.json({ error: "Image must be between 1 byte and 8 MB" }, 400);
+  }
+  let bytes: Uint8Array;
+  try {
+    bytes = Uint8Array.from(atob(contentBase64), (character) => character.charCodeAt(0));
+  } catch {
+    return c.json({ error: "contentBase64 is not valid base64" }, 400);
+  }
+  const isPng = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+  const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8;
+  const isWebp = bytes.length > 12 && String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" && String.fromCharCode(...bytes.slice(8, 12)) === "WEBP";
+  if (!isPng && !isJpeg && !isWebp) return c.json({ error: "Only PNG, JPEG and WebP images are accepted" }, 400);
+  if (bytes.byteLength > 8 * 1024 * 1024) return c.json({ error: "Image exceeds 8 MB" }, 413);
+  const extension = isPng ? "png" : isJpeg ? "jpg" : "webp";
+  const safeName = filename.replace(/\.[^.]*$/, "").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 60) || "image";
+  const r2Key = `imports/drafts/${draftId}/${Date.now()}-${safeName}.${extension}`;
+  await c.env.SITE_BUCKET.put(r2Key, bytes);
+  return c.json({ r2Key }, 201);
+}
+
 export async function uploadDraftReferenceScreenshot(c: Context<{ Bindings: Env }>): Promise<Response> {
   const denied = await guard(c);
   if (denied) return denied;
@@ -265,6 +302,7 @@ export function registerAdminApiRoutes(app: Hono<{ Bindings: Env }>): void {
   app.get("/api/admin/intake-drafts/:draftId", getDraft);
   app.patch("/api/admin/intake-drafts/:draftId", patchDraft);
   app.post("/api/admin/intake-drafts/:draftId/reference-screenshot", uploadDraftReferenceScreenshot);
+  app.post("/api/admin/intake-drafts/:draftId/import-image", uploadDraftImportImage);
   app.post("/api/admin/intake-drafts/:draftId/validate-and-generate", validateAndGenerateDraft);
   app.post("/api/admin/intake-drafts/:draftId/regenerate", regenerateDraft);
   app.get("/api/admin/sites/:siteId", getSiteReview);

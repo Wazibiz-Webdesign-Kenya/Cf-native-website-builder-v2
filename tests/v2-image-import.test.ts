@@ -89,6 +89,23 @@ describe("importImagesForVersion", () => {
     expect(rows?.n).toBe(1);
   });
 
+  it("accepts uploaded files (r2Key) and rejects keys outside imports/drafts/", async () => {
+    const base = { buildMode: "REFERENCE_BOUND", facts: { businessName: "T", contactEmail: "a@b.co", ...canonicalStructuredFacts() }, reference: { url: "https://x.example" } };
+    expect(validateOnboardingSubmissionPayload({ ...base, imageImport: { policy: "IMPORTED_ONLY", images: [{ r2Key: "imports/drafts/d1/1-a.png" }] } }).valid).toBe(true);
+    expect(validateOnboardingSubmissionPayload({ ...base, imageImport: { policy: "IMPORTED_ONLY", images: [{ r2Key: "reference-screenshots/drafts/d1/a.png" }] } }).valid).toBe(false);
+    expect(validateOnboardingSubmissionPayload({ ...base, imageImport: { policy: "IMPORTED_ONLY", images: [{ url: "https://a.example/1.jpg", r2Key: "imports/drafts/d1/1-a.png" }] } }).valid).toBe(false);
+  });
+
+  it("imports an uploaded file from R2 as a zero-cost Accepted Image", async () => {
+    const key = `imports/drafts/test-${Math.random().toString(36).slice(2)}/1-photo.png`;
+    await env.SITE_BUCKET.put(key, await encodePng({ width: 1600, height: 900, rgb: new Uint8Array(1600 * 900 * 3).fill(80) }));
+    const { buildId, buildVersionId, submissionId } = await build({ policy: "IMPORTED_ONLY", images: [{ r2Key: key, page: "home" }] });
+    const result = await importImagesForVersion(env, { submissionId, buildId, buildVersionId, buildVersionNumber: 1, slots: SLOTS });
+    expect(result.imported).toBe(1);
+    expect(result.skipGeneration).toBe(true);
+    expect((await getAcceptedImageMap(env, buildVersionId)).size).toBe(SLOTS.length);
+  });
+
   it("does nothing for a submission without imageImport", async () => {
     const { buildId, buildVersionId, submissionId } = await build();
     const result = await importImagesForVersion(env, { submissionId, buildId, buildVersionId, buildVersionNumber: 1, slots: SLOTS });

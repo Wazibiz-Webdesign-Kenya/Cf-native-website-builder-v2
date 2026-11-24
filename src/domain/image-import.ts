@@ -100,16 +100,32 @@ export function matchImportsToSlots(
 
 export type ImageFetcher = (url: string, signal: AbortSignal) => Promise<Response>;
 
+/** Stable identity of an import entry: its URL, or r2:<key> for an upload. */
+export function importRef(entry: ImageImport["images"][number]): string {
+  return "r2Key" in entry ? `r2:${entry.r2Key}` : entry.url;
+}
+
+async function loadUpload(env: Env, r2Key: string): Promise<Response> {
+  const object = await env.SITE_BUCKET.get(r2Key);
+  if (!object) return new Response("upload missing", { status: 404 });
+  return new Response(object.body, { status: 200 });
+}
+
 async function fetchImport(
   index: number,
   entry: ImageImport["images"][number],
-  fetcher: ImageFetcher
+  fetcher: ImageFetcher,
+  env: Env
 ): Promise<FetchedImport | ImportRejection> {
-  const reject = (reason: string): ImportRejection => ({ index, url: entry.url, reason });
+  const ref = importRef(entry);
+  const reject = (reason: string): ImportRejection => ({ index, url: ref, reason });
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), IMPORT_FETCH_TIMEOUT_MS);
   try {
-    const response = await fetcher(entry.url, controller.signal);
+    const response =
+      "r2Key" in entry
+        ? await loadUpload(env, entry.r2Key)
+        : await fetcher(entry.url, controller.signal);
     if (!response.ok) return reject(`HTTP ${response.status}`);
     const declared = Number(response.headers.get("content-length") ?? "0");
     if (declared > IMPORT_MAX_BYTES) return reject(`larger than ${IMPORT_MAX_BYTES / 1024 / 1024} MB`);
@@ -125,7 +141,7 @@ async function fetchImport(
     }
     return {
       index,
-      url: entry.url,
+      url: ref,
       ...(entry.page ? { page: entry.page } : {}),
       ...(entry.alt ? { alt: entry.alt } : {}),
       bytes,
@@ -198,8 +214,8 @@ export async function importImagesForVersion(
   if (openSlots.length > 0) {
     const pending = config.images
       .map((entry, index) => ({ entry, index }))
-      .filter(({ entry }) => config.policy === "IMPORTED_ONLY" || !spentUrls.has(entry.url));
-    const results = await Promise.all(pending.map(({ entry, index }) => fetchImport(index, entry, fetcher)));
+      .filter(({ entry }) => config.policy === "IMPORTED_ONLY" || !spentUrls.has(importRef(entry)));
+    const results = await Promise.all(pending.map(({ entry, index }) => fetchImport(index, entry, fetcher, env)));
     for (const result of results) {
       if ("bytes" in result) fetched.push(result);
       else rejected.push(result);

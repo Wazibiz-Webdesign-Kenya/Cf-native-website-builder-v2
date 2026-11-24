@@ -332,7 +332,7 @@ function collectPayload() {
       policy: document.getElementById('image-import-policy').value,
       images: importLines.map(function (line) {
         var parts = line.split('|').map(function (x) { return x.trim(); });
-        var entry = { url: parts[0] };
+        var entry = parts[0].indexOf('r2:') === 0 ? { r2Key: parts[0].slice(3) } : { url: parts[0] };
         if (parts[1] && pages.indexOf(parts[1].toLowerCase()) >= 0) entry.page = parts[1].toLowerCase();
         if (parts[2]) entry.alt = parts[2];
         return entry;
@@ -416,6 +416,27 @@ function modeChanged() {
   document.getElementById('od-panel').classList.toggle('hidden', mode !== 'ORIGINAL_DESIGN');
   document.getElementById('rb-panel').classList.toggle('hidden', mode !== 'REFERENCE_BOUND');
   document.getElementById('generate-btn').disabled = !mode;
+}
+async function uploadImportImages() {
+  var input = document.getElementById('image-import-files');
+  var files = Array.prototype.slice.call(input.files || []);
+  if (!files.length) { flash('Choose one or more images first.', true); return; }
+  var box = document.getElementById('image-import');
+  var done = 0;
+  for (var f = 0; f < files.length; f++) {
+    var file = files[f];
+    flash('Uploading ' + (f + 1) + ' of ' + files.length + ': ' + file.name + '…', false);
+    var buffer = new Uint8Array(await file.arrayBuffer());
+    var binary = '';
+    for (var i = 0; i < buffer.length; i += 8192) { binary += String.fromCharCode.apply(null, buffer.subarray(i, i + 8192)); }
+    var response = await fetch(API + '/import-image', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ filename: file.name, contentBase64: btoa(binary) }) });
+    var result = await response.json().catch(function () { return null; });
+    if (!response.ok) { flash('Upload failed for ' + file.name + ': ' + extractError(result, 'HTTP ' + response.status), true); return; }
+    box.value = (box.value.trim() ? box.value.trim() + String.fromCharCode(10) : '') + 'r2:' + result.r2Key;
+    done++;
+  }
+  input.value = '';
+  flash(done + ' image(s) uploaded and added to the list. Press Save draft to keep them.', false);
 }
 async function uploadScreenshot() {
   const input = document.getElementById('screenshot-input');
@@ -582,8 +603,13 @@ async function IntakeEditorPage(c: Context<{ Bindings: Env }>, draft: IntakeDraf
               {textField("whatsapp", "WhatsApp", business.whatsappNumber ?? "", "tel")}
               {textField("logo-url", "Logo URL (optional)", business.logoUrl ?? "", "url")}
             </div>
-            <label for="image-import">Imported images (optional) — one per line: https://… | page (home/about/services/contact, optional) | alt text (optional)</label>
-            <textarea id="image-import" style={{ "min-height": "5rem" }}>{(draft.payload.imageImport?.images ?? []).map((i) => i.url + (i.page || i.alt ? " | " + (i.page ?? "") : "") + (i.alt ? " | " + i.alt : "")).join("\n")}</textarea>
+            <label for="image-import">Imported images (optional) — one per line: https://… (or an uploaded r2: entry) | page (home/about/services/contact, optional) | alt text (optional)</label>
+            <textarea id="image-import" style={{ "min-height": "5rem" }}>{(draft.payload.imageImport?.images ?? []).map((i) => ("r2Key" in i ? "r2:" + i.r2Key : i.url) + (i.page || i.alt ? " | " + (i.page ?? "") : "") + (i.alt ? " | " + i.alt : "")).join("\n")}</textarea>
+            <div class="field">
+              <label for="image-import-files">…or import from your computer (PNG / JPEG / WebP, up to 8 MB each)</label>
+              <input type="file" id="image-import-files" accept="image/png,image/jpeg,image/webp" multiple />
+              <button type="button" class="secondary" onclick="uploadImportImages()">Upload selected images</button>
+            </div>
             <label for="image-import-policy">When imported images don't cover every slot</label>
             <select id="image-import-policy">
               <option value="IMPORTED_THEN_GENERATE" selected={(draft.payload.imageImport?.policy ?? "IMPORTED_THEN_GENERATE") === "IMPORTED_THEN_GENERATE"}>Generate the remaining images with AI</option>
