@@ -119,8 +119,8 @@ function Layout(props: { active: string; children?: unknown }) {
       <body>
         <header>
           <span class="brand">Wazibiz Builder</span>
-          <a href="/admin/intakes">Intakes</a>
-          <a href="/admin/notifications">Notifications</a>
+          <a href="/intakes">Intakes</a>
+          <a href="/notifications">Notifications</a>
         </header>
         <main>{props.children as never}</main>
       </body>
@@ -220,6 +220,17 @@ async function IntakesPage(c: Context<{ Bindings: Env }>): Promise<Response> {
 
 const EDITOR_JS = (apiPath: string, retryBuildMode: string | null) => `
 const API = '${apiPath}';
+function flash(message, isError) {
+  var el = document.getElementById('flash');
+  el.textContent = message;
+  el.style.display = 'block';
+  el.className = isError ? 'flash error' : 'flash';
+}
+function extractError(result, fallback) {
+  if (!result || !result.error) return fallback;
+  if (typeof result.error === 'string') return result.error;
+  return result.error.message || result.error.code || fallback;
+}
 async function retryWorkflow() {
   const response = await fetch(API + '/validate-and-generate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ buildMode: '${retryBuildMode ?? ""}' }) });
   const result = await response.json();
@@ -1015,12 +1026,12 @@ export function registerAdminPageRoutes(app: Hono<{ Bindings: Env }>): void {
     if (denied) return denied;
     return await IntakesPage(c);
   });
-  app.get("/admin/notifications", async (c) => {
+  app.get("/notifications", async (c) => {
     const denied = await guard(c);
     if (denied) return denied;
     return await NotificationsPage(c);
   });
-  app.get("/admin/intakes/:draftId", async (c) => {
+  app.get("/intakes/:draftId", async (c) => {
     const denied = await guard(c);
     if (denied) return denied;
     const draft = await getIntakeDraft(c.env, c.req.param("draftId") as string);
@@ -1043,6 +1054,7 @@ export function registerAdminPageRoutes(app: Hono<{ Bindings: Env }>): void {
   app.get("/admin", (c) => c.redirect("/intakes", 302));
   app.get("/admin/", (c) => c.redirect("/intakes", 302));
   app.get("/admin/intakes", (c) => c.redirect("/intakes", 302));
+  app.get("/admin/notifications", (c) => c.redirect("/notifications", 302));
   app.get("/admin/intakes/:draftId", (c) => c.redirect(`/intakes/${c.req.param("draftId")}`, 302));
   app.get("/admin/sites/:siteId", (c) => c.redirect(`/sites/${c.req.param("siteId")}`, 302));
 }
