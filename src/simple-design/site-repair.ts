@@ -235,7 +235,7 @@ ${JSON.stringify(input.blueprint)}
 PRESERVATION SET (absolute — spec section 50): Business Facts below, contact details, Accepted Image identities (IMG: slot mappings), Blueprint design direction, and the FORM CONTRACT exactly:
 - form action: ${input.formServiceEndpoint}
 - hidden input: <input type="hidden" name="siteFormId" value="${input.siteFormId}">
-- fields exactly: name, email, message with labels; no other delivery-control fields
+- fields: name, phone, email, message with labels, plus any extra plain-text or select fields the bundle already has (keep each field as it is); no other delivery-control fields
 
 ACCEPTED IMAGES (unchanged mappings):
 ${input.acceptedImages.length > 0 ? images : "(none — keep the bundle image-free)"}

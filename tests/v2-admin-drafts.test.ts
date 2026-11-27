@@ -453,6 +453,82 @@ describe("admin draft review, edit and conversion", () => {
     expect(draftRow?.recovered_site_generation_id).toBe(body.recovered.siteGenerationId);
   });
 
+  it("refuses to freeze research notes or an unconfirmed submitter email, creating nothing", async () => {
+    const createWorkflow = vi.fn(async () => ({ id: "w-publish-check" }));
+    const env = runtimeEnv(createWorkflow);
+    const draftId = await createDraftViaPublicForm(env, "Publish Check Gardens");
+    const app = fullApp(env);
+    const url = `https://test.example.com/api/admin/intake-drafts/${draftId}`;
+    const headers = { "content-type": "application/json", ...ACCESS_HEADERS };
+    const business = {
+      businessName: "Publish Check Gardens",
+      contactEmail: "flow@submitter.example",
+      businessDescription: "Daily hours to confirm.",
+      ...canonicalStructuredFacts(),
+    };
+    await app.request(url, { method: "PATCH", headers, body: JSON.stringify({ business }) }, env);
+    const generate = (extra: Record<string, unknown> = {}) =>
+      app.request(`${url}/validate-and-generate`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ buildMode: "ORIGINAL_DESIGN", creativeDirection: { direction: "Calm garden" }, ...extra }),
+      }, env);
+
+    const blocked = await generate();
+    expect(blocked.status).toBeGreaterThanOrEqual(400);
+    const blockedText = await blocked.text();
+    expect(blockedText).toContain("$.facts.contactEmail");
+    expect(blockedText).toContain("$.facts.businessDescription");
+    expect(createWorkflow).not.toHaveBeenCalled();
+    const row = await env.DB.prepare("SELECT converted_site_generation_id FROM client_intake_drafts WHERE id = ?")
+      .bind(draftId)
+      .first<{ converted_site_generation_id: string | null }>();
+    expect(row?.converted_site_generation_id).toBeNull();
+
+    await app.request(url, { method: "PATCH", headers, body: JSON.stringify({ business: { ...business, businessDescription: "A garden venue." } }) }, env);
+    // The confirmation must be an explicit boolean, and never skips the text checks.
+    expect((await generate({ confirmPublicContactEmail: "true" })).status).toBeGreaterThanOrEqual(400);
+    expect((await generate({ confirmPublicContactEmail: true })).status).toBe(201);
+  });
+
+  it("recovery regeneration applies the same publish checks and accepts the email confirmation", async () => {
+    const { createInitialBuild, appendBuildWorkflowEvent } = await import("../src/domain/lifecycle");
+    const env = runtimeEnv(vi.fn(async () => ({ id: "w-recovery-check" })));
+    const draftId = await createDraftViaPublicForm(env, "Recovery Check Gardens");
+    const app = fullApp(env);
+    const url = `https://test.example.com/api/admin/intake-drafts/${draftId}`;
+    const headers = { "content-type": "application/json", ...ACCESS_HEADERS };
+    await app.request(url, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        business: { businessName: "Recovery Check Gardens", contactEmail: "flow@submitter.example", ...canonicalStructuredFacts() },
+      }),
+    }, env);
+    const first = await app.request(`${url}/validate-and-generate`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ buildMode: "REFERENCE_BOUND", referenceUrl: "https://reference.example.com/check", confirmPublicContactEmail: true }),
+    }, env);
+    expect(first.status).toBe(201);
+    const { siteGenerationId } = (await first.json()) as { siteGenerationId: string };
+    const initial = await createInitialBuild(env, { siteGenerationId });
+    await appendBuildWorkflowEvent(env, {
+      buildId: initial.buildId,
+      fromState: "CONFIRMATION",
+      toState: "HUMAN_REVIEW_REQUIRED",
+      stage: "simple_final_qa",
+      detail: "Final QA still failing",
+    });
+
+    const regenerate = (body: Record<string, unknown>) =>
+      app.request(`${url}/regenerate`, { method: "POST", headers, body: JSON.stringify(body) }, env);
+    const blocked = await regenerate({});
+    expect(blocked.status).toBeGreaterThanOrEqual(400);
+    expect(await blocked.text()).toContain("$.facts.contactEmail");
+    expect((await regenerate({ confirmPublicContactEmail: true })).status).toBe(201);
+  });
+
   it("recovery regeneration is refused while the latest build is not terminally failed", async () => {
     const { createInitialBuild } = await import("../src/domain/lifecycle");
     const env = runtimeEnv(vi.fn(async () => ({ id: "w-running-instance" })));

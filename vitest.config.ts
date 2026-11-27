@@ -113,6 +113,10 @@ export default defineWorkersConfig({
       workers: {
         wrangler: { configPath: "./wrangler.test.jsonc" },
         isolatedStorage: false,
+        // The Workers pool ignores `fileParallelism`; this is what runs files one
+        // at a time. Without it they share this storage concurrently, which
+        // raced the migration setup and timed out the sweep tests.
+        singleWorker: true,
         miniflare: {
           d1Databases: ["DB"],
           r2Buckets: ["SITE_BUCKET"],
@@ -128,6 +132,7 @@ export default defineWorkersConfig({
       "tests/v2-revision.test.ts",
       "tests/v2-original-design.test.ts",
       "tests/v2-client-intake.test.ts",
+      "tests/v2-intake-checks.test.ts",
       "tests/v2-admin-access.test.ts",
       "tests/v2-admin-drafts.test.ts",
       "tests/v2-admin-notifications.test.ts",
@@ -151,6 +156,7 @@ export default defineWorkersConfig({
       "tests/v2-form-service.test.ts",
       "tests/v2-form-browser-transport.test.ts",
       "tests/v2-assembly-preview.test.ts",
+      "tests/v2-web-standards.test.ts",
       "tests/v2-release-qa.test.ts",
       "tests/v2-static-deploy.test.ts",
       "tests/v2-publication.test.ts",

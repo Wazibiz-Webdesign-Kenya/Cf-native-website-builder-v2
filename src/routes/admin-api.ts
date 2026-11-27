@@ -193,7 +193,7 @@ export async function uploadDraftReferenceScreenshot(c: Context<{ Bindings: Env 
 export async function validateAndGenerateDraft(c: Context<{ Bindings: Env }>): Promise<Response> {
   const denied = await guard(c);
   if (denied) return denied;
-  let body: { buildMode?: unknown; creativeDirection?: unknown; referenceUrl?: unknown };
+  let body: { buildMode?: unknown; creativeDirection?: unknown; referenceUrl?: unknown; confirmPublicContactEmail?: unknown };
   try {
     body = (await c.req.json()) as typeof body;
   } catch {
@@ -209,6 +209,7 @@ export async function validateAndGenerateDraft(c: Context<{ Bindings: Env }>): P
   }
   const conversion: DraftConversionInput = {
     buildMode,
+    ...(body.confirmPublicContactEmail === true ? { confirmPublicContactEmail: true } : {}),
     ...(creativeDirection ? { creativeDirection } : {}),
     ...(typeof body.referenceUrl === "string" && body.referenceUrl ? { referenceUrl: body.referenceUrl } : {}),
   };
@@ -240,7 +241,7 @@ export async function validateAndGenerateDraft(c: Context<{ Bindings: Env }>): P
 export async function regenerateDraft(c: Context<{ Bindings: Env }>): Promise<Response> {
   const denied = await guard(c);
   if (denied) return denied;
-  let body: { referenceUrl?: unknown; creativeDirection?: unknown };
+  let body: { referenceUrl?: unknown; creativeDirection?: unknown; confirmPublicContactEmail?: unknown };
   try {
     body = (await c.req.json()) as typeof body;
   } catch {
@@ -251,6 +252,7 @@ export async function regenerateDraft(c: Context<{ Bindings: Env }>): Promise<Re
     return c.json({ error: { code: "DRAFT_INVALID", message: "creativeDirection failed schema validation" } }, 400);
   }
   const input = {
+    ...(body.confirmPublicContactEmail === true ? { confirmPublicContactEmail: true } : {}),
     ...(typeof body.referenceUrl === "string" && body.referenceUrl ? { referenceUrl: body.referenceUrl } : {}),
     ...(creativeDirection ? { creativeDirection } : {}),
   };

@@ -46,7 +46,7 @@ The person filling the form is not necessarily the site's public contact; submit
 ### `business` — canonical Business Facts (REQUIRED)
 
 - `businessName` — REQUIRED, 1–200 chars after trim.
-- `contactEmail` — REQUIRED, email-shaped, ≤320 chars. This becomes the site's public contact.
+- `contactEmail` — REQUIRED, email-shaped, ≤320 chars. This becomes the site's public contact. If it matches `submitter.email`, the operator must explicitly confirm it is the business's public address before generation.
 - OPTIONAL strings (absent stays absent, never fabricated): `businessType` (≤200), `businessDescription` (≤5000), `idealClientProfile` (≤2000), `addressLine1` (≤300), `city` (≤120), `country` (≤120), `phoneNumber` (≤60), `whatsappNumber` (≤60), `logoUrl` (http(s) URL, ≤2048), `extraInformation` (≤5000).
 - `socials` — OPTIONAL object: `facebook`, `instagram`, `twitter`, `linkedin`, `other` (each an optional string ≤2048).
 - `services` — REQUIRED. Array of 3–20 items, each exactly `{ "name": string (1–200), "description"?: string (≤1000) }`. Duplicate names (case-insensitive) are rejected. The platform never invents services.
@@ -87,6 +87,10 @@ Rules:
 - Storage is EXACTLY the supplied canonical pair — no timezone calculation, no overnight conversion, no second interval model. What the form sends is what the platform stores and what the website renders from.
 - `CLOSED` carries no times.
 - OPEN carries exactly `status`, `open`, `close` (no extra fields).
+
+## Operator checks before generation
+
+The public endpoint accepts the brief as sent. Validate & Generate and recovery regeneration then refuse to freeze it while any Business Fact or Creative Direction text contains a recognised research note or unconfirmed claim (for example "to confirm with the owner", "(to confirm)", "unconfirmed", "online directory", "Sources:"), or while a fact states opening times, in an hours-related sentence, that match no OPEN day in `businessHours`. The check is phrase-based and does not replace operator review. Forms should collect only confirmed facts in `business`.
 
 ## Responses
 

@@ -49,7 +49,10 @@ function runtimeEnv(options: { adminSend?: () => Promise<void>; withAdminTranspo
   };
 }
 
-beforeAll(() => {
+beforeAll(async () => {
+  // Storage is shared across suites and the sweep takes only the oldest due
+  // rows, so notices left by earlier files would crowd out the ones under test.
+  await (providedEnv as unknown as Env).DB.prepare("DELETE FROM admin_notifications").run();
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ success: true }), { status: 200 })));
 });
 

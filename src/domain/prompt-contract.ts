@@ -50,6 +50,9 @@ export const PROMPT_MANIFEST: Record<PromptStageKey, PromptManifestEntry> = {
     promptVersion: "v1",
     bodyFile: "simple/05-original-design-blueprint.md",
   },
+  // v11 (2026-11-28): WEB BEST PRACTICES hard requirement (unique page
+  // metadata, skip link, link text, menu button state, decorative media,
+  // contact form labels and autocomplete). Partly backed by bundle QA warnings.
   // v10 (operator GO 2026-11-10): TOUCH TARGETS (44x36 minimum for every
   // interactive control) + MOBILE COMPOSITION (marker systems must connect
   // to what they mark on mobile) hard requirements added; backed by the
@@ -74,7 +77,7 @@ export const PROMPT_MANIFEST: Record<PromptStageKey, PromptManifestEntry> = {
   // ontology, region graph, trait ledger or second design-analysis call.
   "simple-website-builder": {
     promptId: "simple-website-builder",
-    promptVersion: "v10",
+    promptVersion: "v11",
     bodyFile: "simple/02-website-builder.md",
   },
   // v3 (operator GO, 2026-11-09): visual QA attaches and judges the desktop

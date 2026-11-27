@@ -327,7 +327,8 @@ CRITICAL IMAGE INVARIANT (hard rule): ${CRITICAL_IMAGE_INVARIANT} HIGH-priority 
 FORM CONTRACT (contact page only):
 - form action: ${input.formServiceEndpoint}
 - hidden input: <input type="hidden" name="siteFormId" value="${input.siteFormId}">
-- fields exactly: name, email, message — each with a <label>
+- fields: name, phone (type=tel, labelled "Phone / WhatsApp"), email, message, each with a <label>; extra plain-text or select fields only where the business genuinely needs them
+- at least one of phone or email is required so the visitor is reachable; message is required
 - no other delivery-control fields; no client-side sending logic
 
 FOUR-PAGE REQUIREMENT: home, about, services, contact — internal links /, /about, /services, /contact; every page links the other three; each page: <!DOCTYPE html>, lang attr, viewport meta, title, meta description, og:title/og:description, ONE <h1>, header/nav/main/footer, link site.css, script site.js (defer).

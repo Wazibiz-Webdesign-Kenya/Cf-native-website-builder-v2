@@ -554,6 +554,7 @@ export async function runSimpleBuildPipeline(
             acceptedImages,
             formServiceEndpoint,
             expectedSiteFormId: siteFormId,
+            facts,
           });
           await freezeAssembledCandidate(env, {
             siteGenerationId: ctx.siteGenerationId,

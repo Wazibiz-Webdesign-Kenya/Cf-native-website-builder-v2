@@ -239,12 +239,16 @@ async function retryWorkflow() {
   setTimeout(function () { location.reload(); }, 600);
 }
 async function regenerate() {
-  const response = await fetch(API + '/regenerate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  const response = await fetch(API + '/regenerate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(publicEmailConfirmation()) });
   const result = await response.json();
   if (!response.ok && response.status !== 200) { flash('Recovery failed: ' + (result.error && (result.error.message || result.error) || response.status), true); return; }
   if (result.recovered && result.recovered.healedWorkflowStart) { flash('Workflow healed for the existing generation.'); }
   else { flash('New generation started on the same site.'); }
   setTimeout(function () { location.reload(); }, 600);
+}
+function publicEmailConfirmation() {
+  const box = document.getElementById('confirm-public-email');
+  return box && box.checked ? { confirmPublicContactEmail: true } : {};
 }
 function serviceRow(name, description) {
   const div = document.createElement('div');
@@ -355,7 +359,7 @@ async function generate() {
     flash('Choose a Build Mode first — ORIGINAL_DESIGN or REFERENCE_BOUND. Nothing was started.', true);
     return;
   }
-  const body = { buildMode: buildMode };
+  const body = Object.assign({ buildMode: buildMode }, publicEmailConfirmation());
   if (buildMode === 'ORIGINAL_DESIGN') {
     body.creativeDirection = {
       direction: document.getElementById('cd-direction').value,
@@ -503,6 +507,16 @@ async function IntakeEditorPage(c: Context<{ Bindings: Env }>, draft: IntakeDraf
   const business = draft.payload.business;
   const prefs = draft.payload.designPreferences ?? {};
   const converted = Boolean(draft.convertedSiteGenerationId);
+  // Offered only when the public address is the submitter's own: publishing it
+  // then needs the operator's explicit confirmation.
+  const publicEmailConfirm =
+    business.contactEmail.trim().toLowerCase() === draft.submitterEmail.trim().toLowerCase() ? (
+      <label style={{ display: "block", margin: "0.75rem 0" }}>
+        <input type="checkbox" id="confirm-public-email" style={{ width: "auto", "margin-right": "0.5rem" }} />
+        {business.contactEmail} is also the submitter's address. Tick only if it is the business's public email and may
+        appear on the website.
+      </label>
+    ) : null;
   const hours = business.businessHours;
   const hoursRows = Object.entries(hours).map(([day, entry]) => (
     <div class="hours-row">
@@ -562,6 +576,7 @@ async function IntakeEditorPage(c: Context<{ Bindings: Env }>, draft: IntakeDraf
                 NEW generation on this same site and Build Mode from a fresh immutable submission built from this draft's
                 current payload — history is preserved, nothing is auto-published.
               </p>
+              {publicEmailConfirm}
               <button type="button" class="secondary" onclick="regenerate()">
                 Start new generation (recovery)
               </button>
@@ -713,6 +728,7 @@ async function IntakeEditorPage(c: Context<{ Bindings: Env }>, draft: IntakeDraf
               {draft.payload.referenceScreenshotR2Key ? <p class="muted">Stored: {draft.payload.referenceScreenshotR2Key}</p> : null}
               <p class="muted">Client design preferences stay visible above as CLIENT NOTES — they never enter a REFERENCE_BOUND submission.</p>
             </div>
+            {publicEmailConfirm}
             <div class="actions">
               <span class="muted spacer">The Generate button unlocks once a Build Mode is chosen.</span>
               <button type="button" id="generate-btn" onclick="generate()" disabled>

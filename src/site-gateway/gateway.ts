@@ -41,6 +41,28 @@ export interface ResolvedOrigin {
   workerName: string;
 }
 
+// Browser security headers for Site content. A header the origin already set
+// wins. HSTS starts deliberately short because browsers cache it: raise the
+// max-age only after the live Sites are verified. No script/style CSP yet: it
+// needs a report-only rollout against generated pages first.
+export const SITE_SECURITY_HEADERS: Readonly<Record<string, string>> = {
+  "strict-transport-security": "max-age=300",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "strict-origin-when-cross-origin",
+  "x-frame-options": "SAMEORIGIN",
+  "content-security-policy": "frame-ancestors 'self'",
+  "permissions-policy": "camera=(), geolocation=(), microphone=()",
+};
+
+function siteResponseHeaders(upstream: Headers): Headers {
+  const headers = new Headers(upstream);
+  headers.delete("set-cookie");
+  for (const [name, value] of Object.entries(SITE_SECURITY_HEADERS)) {
+    if (!headers.has(name)) headers.set(name, value);
+  }
+  return headers;
+}
+
 // Normalizes and validates the incoming Host: it must be EXACTLY
 // `{one-label}.{SITES_BASE_DOMAIN}` — not the apex, not a deeper subdomain,
 // not a lookalike, no unexpected port, no malformed label.
@@ -238,12 +260,8 @@ export async function handleSiteGatewayRequest(
       console.error(`[site-gateway] origin is not serving (orphaned publication) for ${siteHost}`);
       return new Response("Service unavailable", { status: 502, headers: { "content-type": "text/plain; charset=utf-8" } });
     }
-    const notFoundHeaders = new Headers(response.headers);
-    notFoundHeaders.delete("set-cookie");
-    return new Response(body, { status: 404, headers: notFoundHeaders });
+    return new Response(body, { status: 404, headers: siteResponseHeaders(response.headers) });
   }
 
-  const responseHeaders = new Headers(response.headers);
-  responseHeaders.delete("set-cookie");
-  return new Response(response.body, { status: response.status, headers: responseHeaders });
+  return new Response(response.body, { status: response.status, headers: siteResponseHeaders(response.headers) });
 }

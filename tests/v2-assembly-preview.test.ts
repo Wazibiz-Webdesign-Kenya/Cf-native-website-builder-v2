@@ -11,6 +11,7 @@ import {
 } from "../src/domain/assembly";
 import { runTechnicalPreflight } from "../src/domain/technical-preflight";
 import { getObject, putObject } from "../src/lib/assets";
+import { getSiteAddress } from "../src/domain/site-address";
 import type { ImageSlot } from "../src/domain/site-contracts";
 
 // Primary-seam tests for assembly, Technical Preflight and Preview
@@ -143,6 +144,15 @@ describe("Technical Preflight", () => {
     expect(ids).toContain("MISSING_CRITICAL_IMAGE");
   });
 
+  it("requires each page's own canonical when the Site has an address", () => {
+    const canonicalBaseUrl = "https://rvr.wazibiz.co.ke";
+    const verdict = runTechnicalPreflight(
+      { pages: goodPages({ heroSrc: "assets/images/home-hero.webp", aboutSrc: "assets/images/about-main.webp" }), sharedCss: SHARED_CSS, sharedJs: SHARED_JS },
+      { formServiceEndpoint: FORM_ENDPOINT, expectedSiteFormId: "site:test-site", criticalSlots: [], canonicalBaseUrl }
+    );
+    expect(verdict.blockers.filter((blocker) => blocker.detail?.includes("canonical"))).toHaveLength(4);
+  });
+
   it("passes a complete well-formed candidate", () => {
     const verdict = runTechnicalPreflight(
       { pages: goodPages({ heroSrc: "assets/images/home-hero.webp", aboutSrc: "assets/images/about-main.webp" }), sharedCss: SHARED_CSS, sharedJs: SHARED_JS },
@@ -154,6 +164,20 @@ describe("Technical Preflight", () => {
 });
 
 describe("assembly and preview deployment", () => {
+  it("writes structured data from the Business Facts on the home page only, replacing the Builder's", async () => {
+    const context = await newBuildContext();
+    const accepted = await seedAcceptedImages();
+    const facts = { businessName: "Rift Valley Roasters", contactEmail: "hi@rvr.example", city: "Nakuru", ...canonicalStructuredFacts() };
+    const candidate = await assembleBuildVersionCandidate(env, {
+      ...assemblyInput(context, { acceptedImages: accepted, pages: goodPages({ jsonLd: true }) }),
+      facts,
+    });
+    expect(candidate.pages.home).toContain('"@type":"LocalBusiness"');
+    expect(candidate.pages.home).toContain('"addressLocality":"Nakuru"');
+    expect(candidate.pages.home).not.toContain("hi@rvr.example");
+    expect(candidate.pages.contact).not.toContain("application/ld+json");
+  });
+
   it("resolves performance-hint preload references (href=\"IMG:…\") through the same plan map (live A/B evidence 2026-09-11)", async () => {
     const context = await newBuildContext();
     const accepted = await seedAcceptedImages();
@@ -193,9 +217,15 @@ describe("assembly and preview deployment", () => {
     expect(candidate.pages.home).not.toContain("IMG:");
     expect(candidate.pages.contact).toContain(FORM_ENDPOINT);
 
+    // Platform-written canonicals and sitemap name the stable Site Address.
+    const address = (await getSiteAddress(env, context.siteId))!;
+    expect(candidate.pages.home).toContain(`<link rel="canonical" href="${address.url}/">`);
+    expect(candidate.pages.about).toContain(`<link rel="canonical" href="${address.url}/about">`);
+    expect(new TextDecoder().decode(deployedFiles.get("sitemap.xml") ?? candidate.files.get("sitemap.xml")!)).toContain(`<loc>${address.url}/services</loc>`);
+
     // The deployed bytes are exactly the manifest files (pages, css, js, images).
     expect([...deployedFiles.keys()].sort()).toEqual(
-      ["about.html", "assets/images/about-main.webp", "assets/images/home-hero.webp", "contact.html", "index.html", "services.html", "site.css", "site.js"].sort()
+      ["about.html", "assets/images/about-main.webp", "assets/images/home-hero.webp", "contact.html", "index.html", "robots.txt", "services.html", "site.css", "site.js", "sitemap.xml"].sort()
     );
     expect(deployer).toHaveBeenCalledTimes(1);
 
