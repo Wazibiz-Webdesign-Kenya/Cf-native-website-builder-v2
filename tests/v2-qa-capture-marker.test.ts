@@ -6,22 +6,20 @@
 // condemned a site it never saw. The page about to be screenshotted must
 // prove ITSELF to be the expected Build Version first.
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env.d";
 import { createProductionQaCapture, PreviewNotReadyError } from "../src/domain/qa-capture";
 import type { PageCapture } from "../src/domain/qa-evidence";
+import { playwrightAdapter } from "../src/lib/browser-adapter";
 
-// The mock factory is hoisted above the imports — resolve the adapter through
-// a closure so the holder assigned inside each test is the one used at call time.
-const launchHolder = vi.hoisted(() => ({
-  adapter: undefined as unknown as { launch: (env: unknown) => Promise<unknown> },
-}));
-
-vi.mock("../src/lib/browser-adapter", () => ({
-  playwrightAdapter: {
-    launch: (env: unknown) => launchHolder.adapter.launch(env),
-  },
-}));
+// Spy on the shared adapter object instead of vi.mock-ing its module: in the
+// shared Workers pool the module mock did not reliably apply, and the real
+// @cloudflare/playwright launch then received the fake BROWSER binding.
+function useFakeBrowser(browser: unknown): void {
+  vi.spyOn(playwrightAdapter, "launch").mockImplementation(
+    async () => browser as Awaited<ReturnType<typeof playwrightAdapter.launch>>
+  );
+}
 
 function makePage(spec: { markerMatches: number }) {
   return {
@@ -52,7 +50,7 @@ function makeEnv(pages: FakePage[]): { env: Env; browser: { close: ReturnType<ty
     }),
     close: vi.fn(async () => {}),
   };
-  launchHolder.adapter = { launch: vi.fn(async () => browser) };
+  useFakeBrowser(browser);
   return { env: { BROWSER: {} } as unknown as Env, browser };
 }
 
@@ -62,6 +60,10 @@ const SPEC = [
 ];
 
 describe("QA capture capture-session marker proof", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("throws PREVIEW_NOT_READY before screenshotting when the capture session serves a placeholder", async () => {
     // Page 1: the readiness pre-poll session — marker present, check passes.
     // Page 2: the capture session — workers.dev propagation lag serves the
