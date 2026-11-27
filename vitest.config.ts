@@ -128,6 +128,7 @@ export default defineWorkersConfig({
       "tests/v2-revision.test.ts",
       "tests/v2-original-design.test.ts",
       "tests/v2-client-intake.test.ts",
+      "tests/v2-intake-checks.test.ts",
       "tests/v2-admin-access.test.ts",
       "tests/v2-admin-drafts.test.ts",
       "tests/v2-admin-notifications.test.ts",

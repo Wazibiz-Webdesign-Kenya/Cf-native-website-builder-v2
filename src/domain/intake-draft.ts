@@ -27,6 +27,7 @@ import {
   type SubmissionValidationIssue,
 } from "./lifecycle-schema";
 import { CreativeDirectionSchema, type CreativeDirection } from "./creative-direction";
+import { findIntakePublishIssues } from "./intake-checks";
 import type { ReferenceInput } from "./lifecycle-schema";
 
 export const DRAFT_STATUSES = ["SUBMITTED", "IN_REVIEW", "GENERATION_STARTED", "REJECTED"] as const;
@@ -412,6 +413,9 @@ export interface DraftConversionInput {
    * (uploaded through the admin endpoint) as referenceScreenshotR2Key.
    */
   referenceUrl?: string;
+  /** The operator's explicit confirmation that the submitter's email address
+   *  is also the business's public one. */
+  confirmPublicContactEmail?: boolean;
 }
 
 export interface DraftConversionPayload {
@@ -506,6 +510,15 @@ export function buildCanonicalSubmissionPayload(
 
   const check = validateOnboardingSubmissionPayload(candidate);
   if (!check.valid) return check;
+
+  // Both conversion and recovery pass through here, before anything is frozen.
+  const publishIssues = findIntakePublishIssues({
+    facts: check.value.facts,
+    ...(check.value.creativeDirection ? { creativeDirection: check.value.creativeDirection } : {}),
+    submitterEmail: draft.submitterEmail,
+    ...(input.confirmPublicContactEmail ? { confirmPublicContactEmail: true } : {}),
+  });
+  if (publishIssues.length > 0) return { valid: false, issues: publishIssues };
   return { valid: true, payload: check.value };
 }
 
