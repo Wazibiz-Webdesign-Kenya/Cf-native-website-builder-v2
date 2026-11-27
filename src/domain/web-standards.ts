@@ -42,17 +42,27 @@ export function buildSitemapXml(baseUrl: string, pageIds: string[]): string {
 
 const JSON_LD_SCRIPT = /<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi;
 
+const NAMED_ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+
+/** One pass over the entities generated copy uses; anything else stays as is. */
+function decodeEntities(text: string): string {
+  return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (full, body: string) => {
+    if (body[0] !== "#") return NAMED_ENTITIES[body.toLowerCase()] ?? full;
+    const code = /^#x/i.test(body) ? parseInt(body.slice(2), 16) : Number(body.slice(1));
+    return code <= 0x10ffff ? String.fromCodePoint(code) : full;
+  });
+}
+
 /** What a visitor can see or follow: body text plus link targets. */
 function publishedContent(pages: readonly string[]): string {
-  return pages
+  const markupFree = pages
     .map((html) => {
       const body = html.replace(/<(head|script|style)\b[\s\S]*?<\/\1>|<!--[\s\S]*?-->/gi, " ");
       const links = [...body.matchAll(/\shref\s*=\s*"((?:mailto|tel):[^"]*)"/gi)].map((match) => match[1]);
       return `${body.replace(/<[^>]+>/g, " ")} ${links.join(" ")}`;
     })
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .toLowerCase();
+    .join(" ");
+  return decodeEntities(markupFree).replace(/\s+/g, " ").toLowerCase();
 }
 
 /** Matches on the last nine digits, so 0722 000 000 and +254722000000 agree. */
@@ -92,7 +102,7 @@ export function buildBusinessJsonLd(
     "@type": isLocal ? "LocalBusiness" : "Organization",
     name: facts.businessName,
     ...(options.siteUrl ? { url: canonicalUrl(options.siteUrl, "home") } : {}),
-    ...(options.description ? { description: options.description } : {}),
+    ...(options.description ? { description: decodeEntities(options.description) } : {}),
     ...(facts.phoneNumber && showsPhone(content, facts.phoneNumber) ? { telephone: facts.phoneNumber } : {}),
     ...(shows(facts.contactEmail) ? { email: facts.contactEmail } : {}),
     ...(Object.keys(address).length > 0 ? { address: { "@type": "PostalAddress", ...address } } : {}),

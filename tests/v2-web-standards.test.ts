@@ -63,6 +63,19 @@ describe("structured data", () => {
     expect(data.address).toMatchObject({ streetAddress: "12 Moi Avenue" });
   });
 
+  it("reads HTML-encoded copy as the text a visitor sees", () => {
+    const data = buildBusinessJsonLd(
+      { ...facts, addressLine1: "Block A & B, Moi Avenue" },
+      {
+        siteUrl: BASE,
+        pages: ["<body><p>Block A &amp; B, Moi Avenue</p></body>"],
+        description: "Weddings &amp; picnics at the &#39;garden&#x27; &quot;gate&quot; &amp;lt;",
+      }
+    );
+    expect(data.address).toMatchObject({ streetAddress: "Block A & B, Moi Avenue" });
+    expect(data.description).toBe(`Weddings & picnics at the 'garden' "gate" &lt;`);
+  });
+
   it("lists open days only", () => {
     const days = buildBusinessJsonLd(facts, { siteUrl: BASE, pages: [] }).openingHoursSpecification as Array<{ dayOfWeek: string }>;
     expect(days.map((day) => day.dayOfWeek)).toEqual(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]);
