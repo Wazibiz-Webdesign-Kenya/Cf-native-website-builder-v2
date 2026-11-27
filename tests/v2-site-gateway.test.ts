@@ -164,6 +164,19 @@ describe("gateway serving", () => {
     expect(postFetch.calls[0].method).toBe("POST");
   });
 
+  it("adds security headers to Site content without overriding the origin's own", async () => {
+    const site = await seededPublishedSite();
+    const { fetch: fetchImpl } = recordingFetch(
+      new Response("<html></html>", { status: 200, headers: { "referrer-policy": "no-referrer", "set-cookie": "a=1" } })
+    );
+    const response = await serve(site.host, "/", fetchImpl);
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("strict-transport-security")).toBe("max-age=300");
+    expect(response.headers.get("content-security-policy")).toBe("frame-ancestors 'self'");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
   it("publish V2 then rollback: the SAME hostname serves whichever exact version is current, with no state mutation", async () => {
     const site = await seededPublishedSite();
     const { fetch: fetchImpl, calls } = recordingFetch(new Response("ok", { status: 200 }));
