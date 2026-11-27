@@ -8,6 +8,7 @@
 // Only a preflight-passing candidate enters full QA.
 
 import { validateCriticalImageCoverage } from "../simple-design/critical-image-coverage";
+import { canonicalUrl, findCanonicalTags } from "./web-standards";
 
 export interface PreflightCheck {
   id: string;
@@ -29,6 +30,9 @@ export interface PreflightContext {
    *  ownership — the SAME shared coverage invariant the Website Builder
    *  validated before persisting; the preflight is the final defense. */
   criticalSlots: Array<{ slotId: string; page: string; section?: string }>;
+  /** The Site Address origin. When present, every page must carry exactly
+   *  its own canonical link; a Site without an address has none to check. */
+  canonicalBaseUrl?: string;
 }
 
 const TEMP_PROVIDER_URL_PATTERNS = [
@@ -79,9 +83,12 @@ export function runTechnicalPreflight(
     checks.push(check("MISSING_METADATA", title !== null, `${pageId}: missing <title>`));
     checks.push(check("MISSING_METADATA", /<meta\s+name="description"/i.test(html), `${pageId}: missing meta description`));
 
-    const canonicalBase = /<link\s+rel="canonical"/i;
-    if (pageId === "home") {
-      checks.push(check("MISSING_METADATA", canonicalBase.test(html) || true, null, "warning"));
+    if (context.canonicalBaseUrl) {
+      const expected = canonicalUrl(context.canonicalBaseUrl, pageId);
+      const found = findCanonicalTags(html);
+      checks.push(
+        check("MISSING_METADATA", found.length === 1 && found[0].includes(`href="${expected}"`), `${pageId}: expected exactly one canonical link to ${expected}`)
+      );
     }
 
     for (const link of html.matchAll(/href="(\/[a-z-]*)"/gi)) {

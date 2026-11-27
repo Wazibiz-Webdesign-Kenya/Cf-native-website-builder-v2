@@ -20,6 +20,10 @@ import { buildVersionAssetKey, buildVersionManifestKey, buildVersionSourceKey } 
 import { runTechnicalPreflight } from "./technical-preflight";
 import type { PreflightCheck } from "./technical-preflight";
 import type { ImageSlot } from "./site-contracts";
+import { getSiteAddress } from "./site-address";
+import { sniffImageDimensions, type ImageDimensions } from "../lib/image-dimensions";
+import { IMAGE_SIZING_CSS, applyCanonicalLink, applyImageAttributes, applyJsonLd, buildBusinessJsonLd, buildRobotsTxt, buildSitemapXml, canonicalUrl } from "./web-standards";
+import type { BusinessFacts } from "./lifecycle-schema";
 
 export interface AssemblyInput {
   buildId: string;
@@ -34,6 +38,9 @@ export interface AssemblyInput {
   acceptedImages: Map<string, string>;
   formServiceEndpoint: string;
   expectedSiteFormId: string;
+  /** The Build's effective Business Facts. When present, the platform writes
+   *  the structured data and drops any the Builder wrote. */
+  facts?: BusinessFacts;
   /** Issue #66 §16: pageId -> the effective stage-artifact subkey composing
    *  this candidate. Frozen into the assembled manifest so "which Home?
    *  which About?" is answerable from the candidate itself. */
@@ -121,6 +128,27 @@ export async function buildAssembledCandidate(env: Env, input: AssemblyInput): P
     // No route: placeholder stays and Technical Preflight rejects it.
   }
 
+  // Real image bytes first: their sniffed sizes become width/height below.
+  const imageFiles = new Map<string, Uint8Array>();
+  const dimensionsBySrc = new Map<string, ImageDimensions>();
+  for (const [slotId, publicPath] of publicPathBySlot) {
+    const r2Key = input.acceptedImages.get(slotId) ?? acceptedByRole.get(roleBySlot.get(slotId)!)!;
+    const body = await getObject(env, r2Key);
+    if (!body) continue;
+    const bytes = new Uint8Array(await new Response(body).arrayBuffer());
+    imageFiles.set(publicPath, bytes);
+    const dimensions = sniffImageDimensions(bytes);
+    if (dimensions) dimensionsBySrc.set(publicPath, dimensions);
+  }
+
+  // Canonicals and the sitemap name the Site's stable address, never the
+  // preview or published workers.dev origin. A Site still awaiting an address
+  // backfill gets none rather than a guessed URL.
+  const generation = await env.DB.prepare("SELECT site_id FROM site_generations WHERE id = ?")
+    .bind(input.siteGenerationId)
+    .first<{ site_id: string }>();
+  const siteUrl = generation ? ((await getSiteAddress(env, generation.site_id))?.url ?? null) : null;
+
   const pages: Record<string, string> = {};
   for (const [pageId, html] of Object.entries(input.pages)) {
     const resolved = html
@@ -135,7 +163,20 @@ export async function buildAssembledCandidate(env: Env, input: AssemblyInput): P
       .replace(/href="IMG:([a-zA-Z0-9_-]+)"/g, (full, slotId: string) =>
         publicPathBySlot.has(slotId) ? `href="assets/images/${slotId}.webp"` : full
       );
-    pages[pageId] = injectBuildVersionMarker(resolved, input.buildVersionId);
+    const standardized = applyCanonicalLink(
+      applyImageAttributes(resolved, dimensionsBySrc),
+      siteUrl ? canonicalUrl(siteUrl, pageId) : null
+    );
+    pages[pageId] = injectBuildVersionMarker(standardized, input.buildVersionId);
+  }
+
+  if (input.facts && pages.home) {
+    const metaTag = /<meta\b[^>]*name="description"[^>]*>/i.exec(pages.home)?.[0] ?? "";
+    const description = /\scontent="([^"]*)"/i.exec(metaTag)?.[1];
+    const jsonLd = buildBusinessJsonLd(input.facts, { siteUrl, pages: Object.values(pages), description });
+    for (const pageId of Object.keys(pages)) {
+      pages[pageId] = applyJsonLd(pages[pageId], pageId === "home" ? jsonLd : null);
+    }
   }
 
   const files = new Map<string, Uint8Array>();
@@ -144,16 +185,20 @@ export async function buildAssembledCandidate(env: Env, input: AssemblyInput): P
   for (const [pageId, html] of Object.entries(pages)) {
     files.set(pageFiles[pageId] ?? `${pageId}.html`, encoder.encode(html));
   }
-  files.set("site.css", encoder.encode(input.sharedCss));
+  files.set(
+    "site.css",
+    encoder.encode(dimensionsBySrc.size > 0 ? `${input.sharedCss}
+${IMAGE_SIZING_CSS}
+` : input.sharedCss)
+  );
   // Platform runtime (forms + WhatsApp prefill) is appended deterministically;
   // the Builder never writes sending logic.
   files.set("site.js", encoder.encode(`${input.sharedJs}
 ${PLATFORM_SITE_SCRIPT}`));
-  for (const [slotId, publicPath] of publicPathBySlot) {
-    const r2Key = input.acceptedImages.get(slotId) ?? acceptedByRole.get(roleBySlot.get(slotId)!)!;
-    const body = await getObject(env, r2Key);
-    if (!body) continue;
-    files.set(publicPath, new Uint8Array(await new Response(body).arrayBuffer()));
+  for (const [publicPath, bytes] of imageFiles) files.set(publicPath, bytes);
+  if (siteUrl) {
+    files.set("robots.txt", encoder.encode(buildRobotsTxt(siteUrl)));
+    files.set("sitemap.xml", encoder.encode(buildSitemapXml(siteUrl, Object.keys(pages))));
   }
 
   // Preflight BEFORE any release-facing persistence of the candidate.
@@ -162,6 +207,7 @@ ${PLATFORM_SITE_SCRIPT}`));
     {
       formServiceEndpoint: input.formServiceEndpoint,
       expectedSiteFormId: input.expectedSiteFormId,
+      ...(siteUrl ? { canonicalBaseUrl: siteUrl } : {}),
       criticalSlots: input.imagePlanSlots
         .filter((slot) => slot.priority === "CRITICAL")
         .map((slot) => ({ slotId: slot.id, page: slot.page, ...(slot.regionId ? { section: slot.regionId } : {}) })),
