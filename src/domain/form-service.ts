@@ -247,12 +247,18 @@ export function parseBrowserFormPayload(raw: unknown): BrowserFormPayload {
   const name = body.name ?? "";
   const email = body.email ?? "";
   const message = body.message ?? "";
-  const headerInjection = /[\r\n]/.test(`${name}${email}${message}${body.phone ?? ""}${body.subject ?? ""}`);
+  const headerInjection = /[\r\n]/.test(`${name}${email}${body.phone ?? ""}${body.subject ?? ""}`);
   if (headerInjection) {
     throw new FormServiceError("HEADER_INJECTION", "Line breaks in header-derived fields are rejected");
   }
   if (name.trim().length < 1 || name.length > 200) throw new FormServiceError("FIELDS_INVALID", "name must be 1-200 characters");
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || email.length > 320) throw new FormServiceError("FIELDS_INVALID", "email must be a valid visitor address");
+  // A visitor must be reachable: a valid email, or (when email is left blank)
+  // a phone/WhatsApp number. Many small-business sites ask phone-first.
+  const hasPhone = (body.phone ?? "").trim().length > 0;
+  const emailBlank = email.trim().length === 0;
+  if (!(emailBlank && hasPhone) && (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || email.length > 320)) {
+    throw new FormServiceError("FIELDS_INVALID", "email must be a valid visitor address (or provide a phone number instead)");
+  }
   if (message.trim().length < 1 || message.length > 5000) throw new FormServiceError("FIELDS_INVALID", "message must be 1-5000 characters");
   if (body.phone !== undefined && body.phone.length > 60) throw new FormServiceError("FIELDS_INVALID", "phone too long");
   if (body.subject !== undefined && body.subject.length > 200) throw new FormServiceError("FIELDS_INVALID", "subject too long");
@@ -267,6 +273,55 @@ export function parseBrowserFormPayload(raw: unknown): BrowserFormPayload {
     },
     ...(body.turnstileToken !== undefined ? { turnstileToken: body.turnstileToken } : {}),
   };
+}
+
+// Real browsers (and generated sites) post more than the strict contract:
+// extra business-specific inputs (event type, preferred date, ...) and, for
+// plain HTML forms, urlencoded bodies. This normaliser keeps the strict
+// contract intact for delivery control — forbidden control keys still reject —
+// while folding every other short text field into the message so nothing the
+// visitor typed is lost. It never accepts a field that could steer delivery.
+const LOOSE_FIELD_KEY = /^[A-Za-z][A-Za-z0-9 _-]{0,40}$/;
+const LOOSE_FIELD_MAX_COUNT = 12;
+const LOOSE_FIELD_MAX_LENGTH = 500;
+
+export function normalizeLooseFormFields(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null) return raw;
+  const kept: Record<string, unknown> = {};
+  const extras: string[] = [];
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (FORBIDDEN_CONTROL_KEYS.includes(key.toLowerCase())) {
+      kept[key] = value; // strict parser rejects it
+    } else if (ALLOWED_PAYLOAD_KEYS.has(key)) {
+      kept[key] = value;
+    } else if (key === "cf-turnstile-response" && typeof value === "string") {
+      kept.turnstileToken = value;
+    } else if (key.startsWith("_") || key.startsWith("cf-")) {
+      continue; // honeypot / framework housekeeping — never part of the lead
+    } else if (typeof value === "string" && LOOSE_FIELD_KEY.test(key)) {
+      const text = value.trim();
+      if (text.length > 0 && extras.length < LOOSE_FIELD_MAX_COUNT) {
+        const label = key.replace(/[-_]+/g, " ").replace(/^./, (ch) => ch.toUpperCase());
+        extras.push(`${label}: ${text.slice(0, LOOSE_FIELD_MAX_LENGTH).replace(/[\r\n]+/g, " ")}`);
+      }
+    } else {
+      kept[key] = value; // unknown shape — strict parser rejects it
+    }
+  }
+  if (extras.length > 0) {
+    const message = typeof kept.message === "string" ? kept.message : "";
+    kept.message = `${message}${message ? "\n\n" : ""}${extras.join("\n")}`;
+  }
+  return kept;
+}
+
+/** Plain-text email body: the visitor's contact details are part of the lead,
+ *  not just the free-text message (a phone-first enquiry has no email). */
+export function composeLeadEmailText(fields: VisitorFormFields): string {
+  const lines = [`Name: ${fields.name}`];
+  if (fields.phone?.trim()) lines.push(`Phone / WhatsApp: ${fields.phone.trim()}`);
+  if (fields.email.trim()) lines.push(`Email: ${fields.email.trim()}`);
+  return `${lines.join("\n")}\n\n${fields.message}`;
 }
 
 // ── Turnstile / rate / transport seams ──────────────────────────────────────
@@ -411,7 +466,7 @@ export async function acceptFormSubmission(
   env: Env,
   input: AcceptFormSubmissionInput
 ): Promise<AcceptedSubmissionResult> {
-  const parsed = parseBrowserFormPayload(input.payload);
+  const parsed = parseBrowserFormPayload(normalizeLooseFormFields(input.payload));
   const siteId = parsed.siteFormId.slice("site:".length);
 
   const siteExists = await env.DB.prepare("SELECT id FROM site_identities WHERE id = ?")
@@ -489,9 +544,9 @@ export async function acceptFormSubmission(
     submissionId,
     destination: configuration.formDestination,
     senderIdentity,
-    replyTo: parsed.fields.email,
+    replyTo: parsed.fields.email || senderIdentity,
     visitorName: parsed.fields.name,
-    message: parsed.fields.message,
+    message: composeLeadEmailText(parsed.fields),
     subject: parsed.fields.subject ?? `New contact message from ${parsed.fields.name}`,
   });
 

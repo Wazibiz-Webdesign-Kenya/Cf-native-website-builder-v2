@@ -18,6 +18,7 @@ import { Value } from "@sinclair/typebox/value";
 import { generateId, nowIso } from "../lib/crypto";
 import {
   BusinessFactsSchema,
+  ImageImportSchema,
   OnboardingSubmissionPayloadSchema,
   validateBusinessFactsSemantics,
   validateOnboardingSubmissionPayload,
@@ -86,6 +87,8 @@ export const IntakeDraftPayloadSchema = Type.Object(
     // submission can never place an R2 key here.
     referenceScreenshotR2Key: Type.Optional(Type.String({ minLength: 1, maxLength: 512 })),
     referenceUrl: Type.Optional(Type.String({ pattern: "^https?://", maxLength: 2048 })),
+    // Admin-supplied imported images (skip/limit AI image generation).
+    imageImport: Type.Optional(ImageImportSchema),
   },
   { additionalProperties: false }
 );
@@ -307,9 +310,40 @@ export interface DraftEditInput {
   business?: IntakeDraftPayload["business"];
   designPreferences?: IntakeDraftPayload["designPreferences"];
   referenceUrl?: string | null;
+  /** Imported images; null clears them. */
+  imageImport?: IntakeDraftPayload["imageImport"] | null;
   adminNotes?: string | null;
   /** Marks the draft as being reviewed by an admin (SUBMITTED -> IN_REVIEW). */
   markInReview?: boolean;
+}
+
+/**
+ * Imported images are the ONE draft field that stays editable after
+ * conversion: they are assets (not facts or design origin) and are consumed by
+ * the NEXT generation (recovery) built from this draft's payload. Already-built
+ * generations are unaffected — their frozen submission is never rewritten.
+ */
+export async function setDraftImageImport(
+  env: Env,
+  id: string,
+  imageImport: IntakeDraftPayload["imageImport"] | null
+): Promise<IntakeDraft> {
+  const draft = await getIntakeDraft(env, id);
+  if (!draft) throw new IntakeDraftError("DRAFT_NOT_FOUND", `Intake Draft ${id} does not exist`);
+  const nextPayload: IntakeDraftPayload = JSON.parse(JSON.stringify(draft.payload));
+  if (imageImport === null) delete nextPayload.imageImport;
+  else nextPayload.imageImport = imageImport;
+  const validated = validateIntakeDraftPayload(nextPayload);
+  if (!validated.valid) {
+    throw new IntakeDraftError(
+      "DRAFT_INVALID",
+      `Image import rejected: ${validated.issues.map((i) => `${i.path} ${i.message}`).join("; ")}`
+    );
+  }
+  await env.DB.prepare("UPDATE client_intake_drafts SET payload_json = ?, updated_at = ? WHERE id = ?")
+    .bind(JSON.stringify(nextPayload), nowIso(), id)
+    .run();
+  return (await getIntakeDraft(env, id))!;
 }
 
 /** Admin edit BEFORE conversion. After Validate & Generate the draft is immutable. */
@@ -330,6 +364,10 @@ export async function editIntakeDraft(
   const nextPayload: IntakeDraftPayload = JSON.parse(JSON.stringify(draft.payload));
   if (edit.business !== undefined) nextPayload.business = edit.business;
   if (edit.designPreferences !== undefined) nextPayload.designPreferences = edit.designPreferences;
+  if (edit.imageImport !== undefined) {
+    if (edit.imageImport === null) delete nextPayload.imageImport;
+    else nextPayload.imageImport = edit.imageImport;
+  }
   if (edit.referenceUrl !== undefined) {
     if (edit.referenceUrl === null) delete nextPayload.referenceUrl;
     else nextPayload.referenceUrl = edit.referenceUrl;
@@ -463,6 +501,8 @@ export function buildCanonicalSubmissionPayload(
     }
     candidate.reference = reference;
   }
+
+  if (draft.payload.imageImport) candidate.imageImport = draft.payload.imageImport;
 
   const check = validateOnboardingSubmissionPayload(candidate);
   if (!check.valid) return check;

@@ -119,8 +119,8 @@ function Layout(props: { active: string; children?: unknown }) {
       <body>
         <header>
           <span class="brand">Wazibiz Builder</span>
-          <a href="/admin/intakes">Intakes</a>
-          <a href="/admin/notifications">Notifications</a>
+          <a href="/intakes">Intakes</a>
+          <a href="/notifications">Notifications</a>
         </header>
         <main>{props.children as never}</main>
       </body>
@@ -220,6 +220,17 @@ async function IntakesPage(c: Context<{ Bindings: Env }>): Promise<Response> {
 
 const EDITOR_JS = (apiPath: string, retryBuildMode: string | null) => `
 const API = '${apiPath}';
+function flash(message, isError) {
+  var el = document.getElementById('flash');
+  el.textContent = message;
+  el.style.display = 'block';
+  el.className = isError ? 'flash error' : 'flash';
+}
+function extractError(result, fallback) {
+  if (!result || !result.error) return fallback;
+  if (typeof result.error === 'string') return result.error;
+  return result.error.message || result.error.code || fallback;
+}
 async function retryWorkflow() {
   const response = await fetch(API + '/validate-and-generate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ buildMode: '${retryBuildMode ?? ""}' }) });
   const result = await response.json();
@@ -314,6 +325,7 @@ function collectPayload() {
   var logo = document.getElementById('logo-url').value.trim(); if (logo) payload.business.logoUrl = logo;
   var diff = document.getElementById('differentiator').value.trim(); if (diff) payload.business.competitiveDifferentiator = diff;
   var refUrl = document.getElementById('reference-url').value.trim(); payload.referenceUrl = refUrl || null;
+  payload.imageImport = collectImageImport();
   return payload;
 }
 async function saveDraft(markInReview) {
@@ -391,6 +403,48 @@ function modeChanged() {
   document.getElementById('od-panel').classList.toggle('hidden', mode !== 'ORIGINAL_DESIGN');
   document.getElementById('rb-panel').classList.toggle('hidden', mode !== 'REFERENCE_BOUND');
   document.getElementById('generate-btn').disabled = !mode;
+}
+function collectImageImport() {
+  var lines = document.getElementById('image-import').value.split('\\n').map(function (l) { return l.trim(); }).filter(Boolean);
+  if (!lines.length) return null;
+  var pages = ['home', 'about', 'services', 'contact'];
+  return {
+    policy: document.getElementById('image-import-policy').value,
+    images: lines.map(function (line) {
+      var parts = line.split('|').map(function (x) { return x.trim(); });
+      var entry = parts[0].indexOf('r2:') === 0 ? { r2Key: parts[0].slice(3) } : { url: parts[0] };
+      if (parts[1] && pages.indexOf(parts[1].toLowerCase()) >= 0) entry.page = parts[1].toLowerCase();
+      if (parts[2]) entry.alt = parts[2];
+      return entry;
+    })
+  };
+}
+async function saveImageImport() {
+  var response = await fetch(API + '/image-import', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ imageImport: collectImageImport() }) });
+  var result = await response.json().catch(function () { return null; });
+  if (!response.ok) { flash('Saving images failed: ' + extractError(result, 'HTTP ' + response.status), true); return; }
+  flash('Images saved. They will be used by the next generation (press Start new generation).', false);
+}
+async function uploadImportImages() {
+  var input = document.getElementById('image-import-files');
+  var files = Array.prototype.slice.call(input.files || []);
+  if (!files.length) { flash('Choose one or more images first.', true); return; }
+  var box = document.getElementById('image-import');
+  var done = 0;
+  for (var f = 0; f < files.length; f++) {
+    var file = files[f];
+    flash('Uploading ' + (f + 1) + ' of ' + files.length + ': ' + file.name + '…', false);
+    var buffer = new Uint8Array(await file.arrayBuffer());
+    var binary = '';
+    for (var i = 0; i < buffer.length; i += 8192) { binary += String.fromCharCode.apply(null, buffer.subarray(i, i + 8192)); }
+    var response = await fetch(API + '/import-image', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ filename: file.name, contentBase64: btoa(binary) }) });
+    var result = await response.json().catch(function () { return null; });
+    if (!response.ok) { flash('Upload failed for ' + file.name + ': ' + extractError(result, 'HTTP ' + response.status), true); return; }
+    box.value = (box.value.trim() ? box.value.trim() + String.fromCharCode(10) : '') + 'r2:' + result.r2Key;
+    done++;
+  }
+  input.value = '';
+  flash(done + ' image(s) uploaded and added to the list. Press Save images (or Save draft) to keep them.', false);
 }
 async function uploadScreenshot() {
   const input = document.getElementById('screenshot-input');
@@ -488,6 +542,21 @@ async function IntakeEditorPage(c: Context<{ Bindings: Env }>, draft: IntakeDraf
           ) : null}
           {recoveryOpen ? (
             <>
+              <h3 style={{ margin: "1rem 0 0.25rem" }}>Images for the next generation</h3>
+            <label for="image-import">Imported images (optional) — one per line: https://… (or an uploaded r2: entry) | page (home/about/services/contact, optional) | alt text (optional)</label>
+            <textarea id="image-import" style={{ "min-height": "5rem" }}>{(draft.payload.imageImport?.images ?? []).map((i) => ("r2Key" in i ? "r2:" + i.r2Key : i.url) + (i.page || i.alt ? " | " + (i.page ?? "") : "") + (i.alt ? " | " + i.alt : "")).join("\n")}</textarea>
+            <div class="field">
+              <label for="image-import-files">…or import from your computer (PNG / JPEG / WebP, up to 8 MB each)</label>
+              <input type="file" id="image-import-files" accept="image/png,image/jpeg,image/webp" multiple />
+              <button type="button" class="secondary" onclick="uploadImportImages()">Upload selected images</button>
+            </div>
+            <label for="image-import-policy">When imported images don't cover every slot</label>
+            <select id="image-import-policy">
+              <option value="IMPORTED_THEN_GENERATE" selected={(draft.payload.imageImport?.policy ?? "IMPORTED_THEN_GENERATE") === "IMPORTED_THEN_GENERATE"}>Generate the remaining images with AI</option>
+              <option value="IMPORTED_ONLY" selected={draft.payload.imageImport?.policy === "IMPORTED_ONLY"}>No AI images — reuse the imported ones</option>
+            </select>
+            <button type="button" class="secondary" onclick="saveImageImport()">Save images</button>
+
               <p style={{ margin: "0.75rem 0 0" }}>
                 The latest build ended <strong>{latestBuildState}</strong> with no publishable release. Recovery starts a
                 NEW generation on this same site and Build Mode from a fresh immutable submission built from this draft's
@@ -557,6 +626,18 @@ async function IntakeEditorPage(c: Context<{ Bindings: Env }>, draft: IntakeDraf
               {textField("whatsapp", "WhatsApp", business.whatsappNumber ?? "", "tel")}
               {textField("logo-url", "Logo URL (optional)", business.logoUrl ?? "", "url")}
             </div>
+            <label for="image-import">Imported images (optional) — one per line: https://… (or an uploaded r2: entry) | page (home/about/services/contact, optional) | alt text (optional)</label>
+            <textarea id="image-import" style={{ "min-height": "5rem" }}>{(draft.payload.imageImport?.images ?? []).map((i) => ("r2Key" in i ? "r2:" + i.r2Key : i.url) + (i.page || i.alt ? " | " + (i.page ?? "") : "") + (i.alt ? " | " + i.alt : "")).join("\n")}</textarea>
+            <div class="field">
+              <label for="image-import-files">…or import from your computer (PNG / JPEG / WebP, up to 8 MB each)</label>
+              <input type="file" id="image-import-files" accept="image/png,image/jpeg,image/webp" multiple />
+              <button type="button" class="secondary" onclick="uploadImportImages()">Upload selected images</button>
+            </div>
+            <label for="image-import-policy">When imported images don't cover every slot</label>
+            <select id="image-import-policy">
+              <option value="IMPORTED_THEN_GENERATE" selected={(draft.payload.imageImport?.policy ?? "IMPORTED_THEN_GENERATE") === "IMPORTED_THEN_GENERATE"}>Generate the remaining images with AI</option>
+              <option value="IMPORTED_ONLY" selected={draft.payload.imageImport?.policy === "IMPORTED_ONLY"}>No AI images — reuse the imported ones</option>
+            </select>
             <label for="business-description">Business description</label>
             <textarea id="business-description">{business.businessDescription ?? ""}</textarea>
             <label for="differentiator">Competitive differentiator (optional)</label>
@@ -994,12 +1075,12 @@ export function registerAdminPageRoutes(app: Hono<{ Bindings: Env }>): void {
     if (denied) return denied;
     return await IntakesPage(c);
   });
-  app.get("/admin/notifications", async (c) => {
+  app.get("/notifications", async (c) => {
     const denied = await guard(c);
     if (denied) return denied;
     return await NotificationsPage(c);
   });
-  app.get("/admin/intakes/:draftId", async (c) => {
+  app.get("/intakes/:draftId", async (c) => {
     const denied = await guard(c);
     if (denied) return denied;
     const draft = await getIntakeDraft(c.env, c.req.param("draftId") as string);
@@ -1022,6 +1103,7 @@ export function registerAdminPageRoutes(app: Hono<{ Bindings: Env }>): void {
   app.get("/admin", (c) => c.redirect("/intakes", 302));
   app.get("/admin/", (c) => c.redirect("/intakes", 302));
   app.get("/admin/intakes", (c) => c.redirect("/intakes", 302));
+  app.get("/admin/notifications", (c) => c.redirect("/notifications", 302));
   app.get("/admin/intakes/:draftId", (c) => c.redirect(`/intakes/${c.req.param("draftId")}`, 302));
   app.get("/admin/sites/:siteId", (c) => c.redirect(`/sites/${c.req.param("siteId")}`, 302));
 }

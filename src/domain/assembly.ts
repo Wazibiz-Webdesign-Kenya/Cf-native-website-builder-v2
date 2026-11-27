@@ -10,6 +10,7 @@
 // traceable to the immutable version. Superseding a candidate creates a new
 // Build Version, never a mutation.
 
+import { PLATFORM_SITE_SCRIPT } from "./platform-site-script";
 import type { Env } from "../env.d";
 import { generateId, nowIso } from "../lib/crypto";
 import { getObject, putImmutableObjectTolerant } from "../lib/assets";
@@ -144,7 +145,10 @@ export async function buildAssembledCandidate(env: Env, input: AssemblyInput): P
     files.set(pageFiles[pageId] ?? `${pageId}.html`, encoder.encode(html));
   }
   files.set("site.css", encoder.encode(input.sharedCss));
-  files.set("site.js", encoder.encode(input.sharedJs));
+  // Platform runtime (forms + WhatsApp prefill) is appended deterministically;
+  // the Builder never writes sending logic.
+  files.set("site.js", encoder.encode(`${input.sharedJs}
+${PLATFORM_SITE_SCRIPT}`));
   for (const [slotId, publicPath] of publicPathBySlot) {
     const r2Key = input.acceptedImages.get(slotId) ?? acceptedByRole.get(roleBySlot.get(slotId)!)!;
     const body = await getObject(env, r2Key);

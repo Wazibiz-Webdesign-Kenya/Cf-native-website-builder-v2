@@ -30,6 +30,7 @@ import type { Env } from "../env.d";
 import { appendBuildWorkflowEvent, createInitialBuild, createNextBuildVersion } from "../domain/lifecycle";
 import { runReferenceIntake, getFrozenReferenceEvidence, ReferenceIntakeError, type ReferenceCaptureFn } from "../domain/reference-intake";
 import { getEffectiveBusinessFacts } from "../domain/revision";
+import { importImagesForVersion } from "../domain/image-import";
 import { getAcceptedImageMap, type ImageGenerationProvider } from "../domain/image-pipeline";
 import { runImageGenerationDurable } from "../domain/image-orchestration";
 import { KieV2ImageProvider } from "../lib/kie-v2";
@@ -478,10 +479,34 @@ export async function runSimpleBuildPipeline(
     });
 
     // ── IMAGES (REUSED durable KIE machinery; blueprint is prompt authority)
+    // Imported images (operator/client supplied photos) are bound to slots
+    // BEFORE any generation: covered slots cost nothing, and IMPORTED_ONLY
+    // skips generation entirely.
+    const importResult = await stepDo(`simple: import images (v${version.buildVersionNumber})`, async () => {
+      const result = await importImagesForVersion(env, {
+        submissionId,
+        buildId,
+        buildVersionId: version.buildVersionId,
+        buildVersionNumber: version.buildVersionNumber,
+        slots: imagePlan,
+      });
+      if (result.requested > 0) {
+        await appendBuildWorkflowEvent(env, {
+          buildId,
+          buildVersionId: version.buildVersionId,
+          fromState: "BLUEPRINT",
+          toState: "BLUEPRINT",
+          stage: "simple_image_import",
+          detail: `policy=${result.policy}; ${result.imported}/${result.requested} imported, ${result.assigned} slot(s) filled (${result.reusedSlots} reused); generation ${result.skipGeneration ? "skipped" : "fills the rest"}${result.rejected.length ? `; rejected: ${result.rejected.map((r) => `#${r.index + 1} ${r.reason}`).join("; ")}`.slice(0, 300) : ""}`,
+        });
+      }
+      return result;
+    });
+
     await stepDo(`simple: images (v${version.buildVersionNumber})`, async () => {
       const accepted = await getAcceptedImageMap(env, version.buildVersionId);
       const unresolved = imagePlan.filter((slot) => !accepted.has(slot.id));
-      if (unresolved.length > 0) {
+      if (unresolved.length > 0 && !importResult.skipGeneration) {
         await runImageGenerationDurable(
           env,
           {

@@ -193,6 +193,41 @@ export const BusinessFactsSchema = Type.Object(
 );
 export type BusinessFacts = Static<typeof BusinessFactsSchema>;
 
+// Operator/client-supplied image assets for a Site Generation (2026-11-24).
+// Imported images become Accepted Images for the Image Slots they fit BEFORE
+// any AI generation runs, so a run that supplies enough real photos spends no
+// generation budget. They are assets, not Business Facts: they never enter
+// fact prompts as claims.
+export const IMPORTED_IMAGES_MAX = 24;
+// Each entry is EITHER a remote https URL OR a file uploaded through the admin
+// endpoint (stored under imports/drafts/ in our own R2 — never expires, unlike
+// signed social-media CDN links).
+const ImportedImagePlacement = {
+  // Optional placement hint; without it the pipeline matches by orientation.
+  page: Type.Optional(
+    Type.Union([Type.Literal("home"), Type.Literal("about"), Type.Literal("services"), Type.Literal("contact")])
+  ),
+  alt: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+};
+export const IMPORTED_UPLOAD_KEY_PATTERN = "^imports/drafts/[A-Za-z0-9._/-]{1,300}$";
+export const ImportedImageSchema = Type.Union([
+  Type.Object({ url: Type.String({ pattern: "^https://", maxLength: 2048 }), ...ImportedImagePlacement }, { additionalProperties: false }),
+  Type.Object({ r2Key: Type.String({ pattern: IMPORTED_UPLOAD_KEY_PATTERN, maxLength: 400 }), ...ImportedImagePlacement }, { additionalProperties: false }),
+]);
+export type ImportedImage = Static<typeof ImportedImageSchema>;
+
+export const IMAGE_IMPORT_POLICIES = ["IMPORTED_THEN_GENERATE", "IMPORTED_ONLY"] as const;
+export const ImageImportSchema = Type.Object(
+  {
+    // IMPORTED_THEN_GENERATE: slots the imports cannot fill are generated.
+    // IMPORTED_ONLY: no generation at all; leftover slots reuse imports.
+    policy: Type.Union(IMAGE_IMPORT_POLICIES.map((value) => Type.Literal(value)) as never),
+    images: Type.Array(ImportedImageSchema, { minItems: 1, maxItems: IMPORTED_IMAGES_MAX }),
+  },
+  { additionalProperties: false }
+);
+export type ImageImport = Static<typeof ImageImportSchema>;
+
 export const OnboardingSubmissionPayloadSchema = Type.Object(
   {
     buildMode: BuildModeSchema,
@@ -202,6 +237,8 @@ export const OnboardingSubmissionPayloadSchema = Type.Object(
     // from. Validated per-mode below — a design-origin input may never leak
     // across modes (changing Build Mode starts a new Site Generation).
     creativeDirection: Type.Optional(CreativeDirectionSchema),
+    // Valid in BOTH modes: imported photos are assets, not design origin.
+    imageImport: Type.Optional(ImageImportSchema),
   },
   { additionalProperties: false }
 );

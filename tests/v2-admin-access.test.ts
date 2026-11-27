@@ -10,6 +10,8 @@ import { Hono } from "hono";
 import type { Env } from "../src/env.d";
 import { listDrafts } from "../src/routes/admin-api";
 import { registerAdminPageRoutes } from "../src/routes/admin-pages";
+import { createIntakeDraft } from "../src/domain/intake-draft";
+import { canonicalStructuredFacts } from "./helpers/canonical-facts";
 import { createAccessHarness, type AccessHarness } from "./helpers/access-test";
 
 const access: AccessHarness = await createAccessHarness("admin-access");
@@ -120,5 +122,53 @@ describe("fail-closed Cloudflare Access admin guard", () => {
     // Redirects leak nothing: the canonical targets stay Access-guarded.
     const redirected = await get("https://admin-test.example.com/admin/intakes");
     expect(redirected.status).toBe(302);
+  });
+
+  it("registers the intake detail and notifications pages at the short paths linked from the list and emails", async () => {
+    // Regression: the list page and notification emails link to /intakes/:id,
+    // but the detail route was left at /admin/intakes/:id, so every link 404ed
+    // (plain Hono "404 Not Found") while the submission itself was saved.
+    const draftUrl = "https://admin-test.example.com/intakes/00000000-0000-0000-0000-000000000000";
+    expect((await get(draftUrl)).status).toBe(401); // route exists and is Access-guarded
+    const missing = await get(draftUrl, await access.validHeaders());
+    expect(missing.status).toBe(404);
+    expect(await missing.text()).toContain("Draft not found"); // app handler, not router fallthrough
+    expect((await get("https://admin-test.example.com/notifications")).status).toBe(401);
+  });
+
+  it("intake editor script defines every helper it calls (Validate & Generate failed silently without flash/extractError)", async () => {
+    // Regression: EDITOR_JS called flash()/extractError() but only the site
+    // review script defined them. On the intake page `flash` resolved to the
+    // <div id="flash"> element, so generate() threw "flash is not a function"
+    // BEFORE its fetch: the button said "Validating…" forever and nothing ran.
+    const draft = await createIntakeDraft(envWith(), {
+      submitter: { name: "Jane Submitter", email: "jane@submitter.example" },
+      business: {
+        businessName: "Helper Regression Cafe",
+        contactEmail: "hello@helper-regression.example",
+        businessType: "Cafe",
+        businessDescription: "A cafe used only to render the editor page.",
+        city: "Mombasa",
+        country: "Kenya",
+        ...canonicalStructuredFacts(),
+      },
+      designPreferences: { direction: "Calm and light" },
+    } as never);
+    const response = await get(`https://admin-test.example.com/intakes/${draft.id}`, await access.validHeaders());
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    const script = html.slice(html.indexOf("const API ="));
+    expect(script).toContain("function flash(");
+    expect(script).toContain("function extractError(");
+    expect(script).toContain("async function generate(");
+  });
+
+  it("redirects the legacy intake detail and notifications paths to the short equivalents", async () => {
+    const detail = await get("https://admin-test.example.com/admin/intakes/abc-123");
+    expect(detail.status).toBe(302);
+    expect(new URL(detail.headers.get("location") ?? "", "https://admin-test.example.com").pathname).toBe("/intakes/abc-123");
+    const notifications = await get("https://admin-test.example.com/admin/notifications");
+    expect(notifications.status).toBe(302);
+    expect(new URL(notifications.headers.get("location") ?? "", "https://admin-test.example.com").pathname).toBe("/notifications");
   });
 });

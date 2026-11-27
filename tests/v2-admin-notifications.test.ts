@@ -231,7 +231,7 @@ describe("admin notifications ledger view", () => {
     expect(failed?.lastError).toContain("not configured");
   });
 
-  it("serves the Access-gated /admin/notifications page showing the ledger", async () => {
+  it("serves the Access-gated /notifications page showing the ledger", async () => {
     const env = runtimeEnv();
     await enqueueAdminNotification(env, {
       kind: "INTAKE_NEW",
@@ -245,10 +245,10 @@ describe("admin notifications ledger view", () => {
 
     // Configured Access + no assertion -> fail closed (401).
     pageAccess.stubFetch();
-    const denied = await app.request("https://admin.example.com/admin/notifications", {}, { ...(env as unknown as Env), ...pageAccess.envVars });
+    const denied = await app.request("https://admin.example.com/notifications", {}, { ...(env as unknown as Env), ...pageAccess.envVars });
     expect(denied.status).toBe(401);
 
-    const response = await app.request("https://admin.example.com/admin/notifications", {
+    const response = await app.request("https://admin.example.com/notifications", {
       headers: { "Cf-Access-Jwt-Assertion": await pageAccess.signToken() },
     }, { ...(env as unknown as Env), ...pageAccess.envVars });
     expect(response.status).toBe(200);
