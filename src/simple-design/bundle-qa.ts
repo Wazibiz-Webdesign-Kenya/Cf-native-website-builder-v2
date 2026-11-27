@@ -46,6 +46,45 @@ export function findCopyStyleDashViolations(html: string): string[] {
   return [...new Set(offenders)];
 }
 
+const CONTACT_AUTOCOMPLETE: Record<string, string> = { name: "name", phone: "tel", email: "email" };
+
+export function findWebBestPracticeWarnings(
+  pages: Partial<Record<PageId, string>>
+): Array<{ id: string; detail: string }> {
+  const warnings: Array<{ id: string; detail: string }> = [];
+  const readers: Array<{ label: string; read: (html: string) => string | undefined }> = [
+    { label: "title", read: (html) => /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] },
+    {
+      label: "meta description",
+      read: (html) => {
+        const tag = /<meta\b[^>]*name="description"[^>]*>/i.exec(html)?.[0];
+        return tag ? /\scontent="([^"]*)"/i.exec(tag)?.[1] : undefined;
+      },
+    },
+  ];
+  for (const { label, read } of readers) {
+    const firstPageByValue = new Map<string, PageId>();
+    for (const pageId of PAGE_IDS) {
+      const value = read(pages[pageId] ?? "")?.trim().toLowerCase();
+      if (!value) continue;
+      const first = firstPageByValue.get(value);
+      if (first) {
+        warnings.push({ id: "DUPLICATE_PAGE_METADATA", detail: `${pageId}: ${label} is the same as on ${first}` });
+      } else {
+        firstPageByValue.set(value, pageId);
+      }
+    }
+  }
+  for (const tag of (pages.contact ?? "").match(/<input\b[^>]*>/gi) ?? []) {
+    const name = /\sname="([^"]+)"/i.exec(tag)?.[1] ?? "";
+    const token = Object.hasOwn(CONTACT_AUTOCOMPLETE, name) ? CONTACT_AUTOCOMPLETE[name] : null;
+    if (token && !tag.includes(`autocomplete="${token}"`)) {
+      warnings.push({ id: "FORM_AUTOCOMPLETE_MISSING", detail: `contact: the '${name}' field should set autocomplete="${token}"` });
+    }
+  }
+  return warnings;
+}
+
 export interface BundleQaInput {
   bundle: SiteBundle;
   blueprint: DesignBlueprintV2;
@@ -210,6 +249,12 @@ export function runDeterministicBundleQa(input: BundleQaInput): BundleQaResult {
     if (doc.includes('name="robots"') && /noindex/i.test(doc)) {
       technical("CRAWLABILITY", "blocker", `${pageId}: noindex robots meta`);
     }
+  }
+
+  // ── Web best practices: warnings only. They add no release blocker and no
+  // mandatory-gate failure, so their ids stay outside every gate above. ──
+  for (const finding of findWebBestPracticeWarnings(bundle.pages)) {
+    technical(finding.id, "warning", finding.detail);
   }
 
   // ── Accessibility + responsive mechanics in the shared CSS ──

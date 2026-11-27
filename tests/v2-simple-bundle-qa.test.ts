@@ -37,7 +37,7 @@ function page(title: string, extra = ""): string {
 function contactPage(formAction = endpoint, hidden = siteFormId): string {
   return page(
     "Contact",
-    `<link rel="stylesheet" href="site.css"><section class="hero contact-hero"><img src="IMG:contact-hero" data-image-id="contact-hero" alt="contact hero image"></section><form method="post" action="${formAction}"><input type="hidden" name="siteFormId" value="${hidden}"><label for="name">Name</label><input id="name" name="name"><label for="email">Email</label><input id="email" name="email"><label for="message">Message</label><textarea id="message" name="message"></textarea><button type="submit">Send</button></form>`
+    `<link rel="stylesheet" href="site.css"><section class="hero contact-hero"><img src="IMG:contact-hero" data-image-id="contact-hero" alt="contact hero image"></section><form method="post" action="${formAction}"><input type="hidden" name="siteFormId" value="${hidden}"><label for="name">Name</label><input id="name" name="name" autocomplete="name"><label for="email">Email</label><input id="email" name="email" autocomplete="email"><label for="message">Message</label><textarea id="message" name="message"></textarea><button type="submit">Send</button></form>`
   );
 }
 
@@ -85,6 +85,21 @@ function qaInput(overrides?: Partial<BundleQaInput>): BundleQaInput {
     ...overrides,
   };
 }
+
+describe("web best practice warnings", () => {
+  it("flags shared page metadata and missing autocomplete without blocking release", () => {
+    const bundle = goodBundle();
+    bundle.pages.about = bundle.pages.about.replace("<title>About</title>", "<title>Services</title>");
+    bundle.pages.contact = bundle.pages.contact.replace(' autocomplete="email"', "");
+    const result = runDeterministicBundleQa(qaInput({ bundle }));
+    expect(result.technicalFindings.map((finding) => [finding.id, finding.severity, finding.detail])).toEqual([
+      ["DUPLICATE_PAGE_METADATA", "warning", "services: title is the same as on about"],
+      ["FORM_AUTOCOMPLETE_MISSING", "warning", `contact: the 'email' field should set autocomplete="email"`],
+    ]);
+    expect(result.technicalBlockerCount).toBe(0);
+    expect(result.gates).toEqual(runDeterministicBundleQa(qaInput()).gates);
+  });
+});
 
 describe("SIMPLE deterministic truth lint (spec section 39)", () => {
   it("clean bundle: zero truth findings and zero technical blockers", () => {
