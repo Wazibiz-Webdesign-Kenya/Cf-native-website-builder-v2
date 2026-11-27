@@ -36,7 +36,7 @@ No blocking finding.
 
 ## Test evidence
 
-- Typecheck passes on each commit.
-- Full suite on this Windows machine, before the entity fix: 732 passed, 3 failed. The same three tests (lifecycle first Build, retention sweep protection, email retry sweep) fail on a clean copy of `f0095f2` on this machine, run for 90 seconds or more there, and pass in CI on that commit.
-- The two `v2-qa-capture-marker` tests failed locally on this work because their module mock did not apply. The suite now spies on the adapter object.
-- The CI run on the pull request is the full-suite record for the final tree.
+- Typecheck passes on each of the first seven commits, and on the final tree.
+- Root cause of the earlier unreliable runs: the Workers pool ignores `fileParallelism: false`, so test files ran concurrently against one shared D1. This raced the migration setup (a CI failure on this pull request) and timed out three sweep tests on the Windows development machine, on a clean copy of `f0095f2` as well. `singleWorker: true` runs files one at a time.
+- Running one at a time exposed leftover notification rows crowding the 10-row retry batch in `v2-admin-notifications`; the suite now clears that table first.
+- Final tree on the Windows development machine: 736 of 736 passed in two consecutive full runs.
