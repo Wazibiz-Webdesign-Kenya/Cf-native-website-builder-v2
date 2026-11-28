@@ -19,6 +19,7 @@ import {
   getDraft,
   listDrafts,
 } from "../src/routes/admin-api";
+import { registerAdminPageRoutes } from "../src/routes/admin-pages";
 import { canonicalStructuredFacts } from "./helpers/canonical-facts";
 import { createAccessHarness, type AccessHarness } from "./helpers/access-test";
 
@@ -527,6 +528,97 @@ describe("admin draft review, edit and conversion", () => {
     expect(blocked.status).toBeGreaterThanOrEqual(400);
     expect(await blocked.text()).toContain("$.facts.contactEmail");
     expect((await regenerate({ confirmPublicContactEmail: true })).status).toBe(201);
+  });
+
+  it("edits a converted draft only while recovery is open, and never rewrites the earlier submission", async () => {
+    const { createInitialBuild, appendBuildWorkflowEvent } = await import("../src/domain/lifecycle");
+    const env = runtimeEnv(vi.fn(async () => ({ id: "w-edit-recovery" })));
+    const draftId = await createDraftViaPublicForm(env, "Edit Recovery Gardens");
+    const app = fullApp(env);
+    const url = `https://test.example.com/api/admin/intake-drafts/${draftId}`;
+    const headers = { "content-type": "application/json", ...ACCESS_HEADERS };
+    const converted = await app.request(`${url}/validate-and-generate`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ buildMode: "ORIGINAL_DESIGN", creativeDirection: { direction: "First direction" } }),
+    }, env);
+    expect(converted.status).toBe(201);
+    const first = (await converted.json()) as { siteGenerationId: string; onboardingSubmissionId: string };
+    const business = {
+      businessName: "Edit Recovery Gardens",
+      contactEmail: "hello@editrecovery.example",
+      businessDescription: "A corrected description.",
+      ...canonicalStructuredFacts(),
+    };
+    const patch = (body: Record<string, unknown>) => app.request(url, { method: "PATCH", headers, body: JSON.stringify(body) }, env);
+    const errorCode = async (response: Response) => ((await response.json()) as { error: { code: string } }).error.code;
+
+    // No build yet, then a running build: the draft stays locked.
+    expect(await errorCode(await patch({ business }))).toBe("DRAFT_IMMUTABLE");
+    const initial = await createInitialBuild(env, { siteGenerationId: first.siteGenerationId });
+    expect(await errorCode(await patch({ business }))).toBe("DRAFT_IMMUTABLE");
+
+    await appendBuildWorkflowEvent(env, { buildId: initial.buildId, fromState: "CONFIRMATION", toState: "HUMAN_REVIEW_REQUIRED", stage: "simple_final_qa", detail: "gated" });
+    // The design origin never changes through an edit.
+    expect(await errorCode(await patch({ referenceUrl: "https://reference.example.com/new" }))).toBe("DRAFT_IMMUTABLE");
+
+    const submissionPayload = async (id: string) =>
+      (await env.DB.prepare("SELECT payload_json FROM onboarding_submissions WHERE id = ?").bind(id).first<{ payload_json: string }>())!.payload_json;
+    const frozen = await submissionPayload(first.onboardingSubmissionId);
+    const saved = await patch({ business, designPreferences: { direction: "Corrected direction" }, referenceUrl: null, markInReview: true });
+    expect(saved.status).toBe(200);
+    expect(((await saved.json()) as { draft: { status: string } }).draft.status).toBe("GENERATION_STARTED");
+
+    const recovered = await app.request(`${url}/regenerate`, { method: "POST", headers, body: "{}" }, env);
+    expect(recovered.status).toBe(201);
+    const { siteGenerationId } = ((await recovered.json()) as { recovered: { siteGenerationId: string } }).recovered;
+    const nextId = (await env.DB.prepare("SELECT onboarding_submission_id FROM site_generations WHERE id = ?").bind(siteGenerationId).first<{ onboarding_submission_id: string }>())!.onboarding_submission_id;
+    const next = await submissionPayload(nextId);
+    expect(next).toContain("A corrected description.");
+    expect(next).toContain("Corrected direction");
+    expect(await submissionPayload(first.onboardingSubmissionId)).toBe(frozen);
+    // The new generation has not failed: the draft is locked again.
+    expect(await errorCode(await patch({ business }))).toBe("DRAFT_IMMUTABLE");
+  });
+
+  it("every field the editor script reads exists on the page, before conversion and during recovery", async () => {
+    const { createInitialBuild, appendBuildWorkflowEvent } = await import("../src/domain/lifecycle");
+    const env = runtimeEnv(vi.fn(async () => ({ id: "w-editor-fields" })));
+    const draftId = await createDraftViaPublicForm(env, "Editor Fields Gardens");
+    const app = fullApp(env);
+    registerAdminPageRoutes(app);
+    const page = async () => {
+      const response = await app.request(`https://admin.example.com/intakes/${draftId}`, { headers: ACCESS_HEADERS }, env);
+      expect(response.status).toBe(200);
+      return await response.text();
+    };
+    // IDs the save path reads without checking that the element exists.
+    const unguardedIds = (html: string) => {
+      const script = /function collectPayload\(\)[\s\S]*?\n}/.exec(html)![0];
+      return [...script.matchAll(/getElementById\('([a-z-]+)'\)\./g)].map((match) => match[1]);
+    };
+    const expectFields = (html: string) => {
+      const ids = unguardedIds(html);
+      expect(ids.length).toBeGreaterThan(10);
+      expect(ids.filter((id) => !html.includes(`id="${id}"`))).toEqual([]);
+    };
+    expectFields(await page());
+
+    const converted = await app.request(`https://test.example.com/api/admin/intake-drafts/${draftId}/validate-and-generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...ACCESS_HEADERS },
+      body: JSON.stringify({ buildMode: "ORIGINAL_DESIGN", creativeDirection: { direction: "Calm" } }),
+    }, env);
+    const { siteGenerationId } = (await converted.json()) as { siteGenerationId: string };
+    expect(await page()).not.toContain('id="business-description"');
+
+    const initial = await createInitialBuild(env, { siteGenerationId });
+    await appendBuildWorkflowEvent(env, { buildId: initial.buildId, fromState: "CONFIRMATION", toState: "HUMAN_REVIEW_REQUIRED", stage: "simple_final_qa", detail: "gated" });
+    const recovery = await page();
+    expectFields(recovery);
+    expect(recovery).toContain('id="save-btn"');
+    expect(recovery).not.toContain('id="generate-btn"');
+    expect(recovery.match(/id="image-import"/g)).toHaveLength(1);
   });
 
   it("recovery regeneration is refused while the latest build is not terminally failed", async () => {

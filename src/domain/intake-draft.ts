@@ -347,7 +347,29 @@ export async function setDraftImageImport(
   return (await getIntakeDraft(env, id))!;
 }
 
-/** Admin edit BEFORE conversion. After Validate & Generate the draft is immutable. */
+/**
+ * Whether recovery regeneration is open for a converted draft: the governed
+ * generation is the Site's latest and its latest Build is terminally failed or
+ * gated. Only then may the draft be corrected, because only recovery reads it.
+ */
+export async function isDraftRecoveryOpen(env: Env, draft: IntakeDraft): Promise<boolean> {
+  const governedGenerationId = draft.recoveredSiteGenerationId ?? draft.convertedSiteGenerationId;
+  if (!governedGenerationId || !draft.convertedSiteId) return false;
+  const row = await env.DB.prepare(
+    `SELECT g.id,
+            (SELECT state FROM builds b WHERE b.site_generation_id = g.id ORDER BY b.created_at DESC, b.id DESC LIMIT 1) AS state
+     FROM site_generations g WHERE g.site_id = ? ORDER BY g.sequence_number DESC LIMIT 1`
+  )
+    .bind(draft.convertedSiteId)
+    .first<{ id: string; state: string | null }>();
+  return row?.id === governedGenerationId && RECOVERY_ALLOWED_BUILD_STATES.has(row.state ?? "");
+}
+
+/**
+ * Admin edit. A converted draft is locked, except while recovery is open
+ * (FDR decision 138): its corrections feed the NEXT submission only. Frozen
+ * submissions are never rewritten and the Reference stays locked.
+ */
 export async function editIntakeDraft(
   env: Env,
   id: string,
@@ -356,10 +378,15 @@ export async function editIntakeDraft(
   const draft = await getIntakeDraft(env, id);
   if (!draft) throw new IntakeDraftError("DRAFT_NOT_FOUND", `Intake Draft ${id} does not exist`);
   if (draft.status === "GENERATION_STARTED" || draft.convertedSiteGenerationId) {
-    throw new IntakeDraftError(
-      "DRAFT_IMMUTABLE",
-      "Intake Draft is immutable after Validate & Generate — later factual changes are Fact Updates inside a Revision Request"
-    );
+    if (!(await isDraftRecoveryOpen(env, draft))) {
+      throw new IntakeDraftError(
+        "DRAFT_IMMUTABLE",
+        "Intake Draft is locked after Validate & Generate unless recovery is open — later factual changes are Fact Updates inside a Revision Request"
+      );
+    }
+    if (edit.referenceUrl !== undefined && (edit.referenceUrl ?? undefined) !== draft.payload.referenceUrl) {
+      throw new IntakeDraftError("DRAFT_IMMUTABLE", "The Reference cannot be changed by editing a converted draft");
+    }
   }
 
   const nextPayload: IntakeDraftPayload = JSON.parse(JSON.stringify(draft.payload));

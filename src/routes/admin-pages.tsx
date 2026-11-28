@@ -17,7 +17,7 @@
 import { Hono, type Context } from "hono";
 import type { Env } from "../env.d";
 import { requireCloudflareAccess } from "../domain/admin-access";
-import { getIntakeDraft, listIntakeDrafts, validateIntakeDraftPayload, type IntakeDraft } from "../domain/intake-draft";
+import { getIntakeDraft, isDraftRecoveryOpen, listIntakeDrafts, validateIntakeDraftPayload, type IntakeDraft } from "../domain/intake-draft";
 import { listAdminNotifications } from "../domain/admin-notifications";
 import { getAdminSiteReview, type AdminSiteReview } from "../domain/admin-review";
 import { defaultAdaptationContract } from "../domain/reference-evidence-schema";
@@ -239,6 +239,8 @@ async function retryWorkflow() {
   setTimeout(function () { location.reload(); }, 600);
 }
 async function regenerate() {
+  // Recovery reads the stored draft, so unsaved corrections are saved first.
+  if (!(await saveDraft(false, true))) return;
   const response = await fetch(API + '/regenerate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(publicEmailConfirmation()) });
   const result = await response.json();
   if (!response.ok && response.status !== 200) { flash('Recovery failed: ' + (result.error && (result.error.message || result.error) || response.status), true); return; }
@@ -298,7 +300,6 @@ function collectPayload() {
     }
   }
   var payload = {
-    submitter: { name: document.getElementById('submitter-name').value, email: document.getElementById('submitter-email').value },
     business: {
       businessName: document.getElementById('business-name').value,
       contactEmail: document.getElementById('contact-email').value,
@@ -328,13 +329,13 @@ function collectPayload() {
   if (socials) { payload.business.socials = socials; }
   var logo = document.getElementById('logo-url').value.trim(); if (logo) payload.business.logoUrl = logo;
   var diff = document.getElementById('differentiator').value.trim(); if (diff) payload.business.competitiveDifferentiator = diff;
-  var refUrl = document.getElementById('reference-url').value.trim(); payload.referenceUrl = refUrl || null;
+  var refInput = document.getElementById('reference-url'); if (refInput) payload.referenceUrl = refInput.value.trim() || null;
   payload.imageImport = collectImageImport();
   return payload;
 }
-async function saveDraft(markInReview) {
+async function saveDraft(markInReview, stayOnPage) {
   const body = collectPayload();
-  if (!body) return;
+  if (!body) return false;
   body.markInReview = markInReview;
   body.adminNotes = document.getElementById('admin-notes').value;
   const btn = document.getElementById('save-btn');
@@ -343,11 +344,15 @@ async function saveDraft(markInReview) {
   try {
     const response = await fetch(API, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     const result = await response.json().catch(function () { return null; });
-    if (!response.ok) { flash('Save failed: ' + extractError(result, 'HTTP ' + response.status), true); return; }
-    flash('Draft saved. Reloading…', false);
-    setTimeout(function () { location.reload(); }, 500);
+    if (!response.ok) { flash('Save failed: ' + extractError(result, 'HTTP ' + response.status), true); return false; }
+    if (!stayOnPage) {
+      flash('Draft saved. Reloading…', false);
+      setTimeout(function () { location.reload(); }, 500);
+    }
+    return true;
   } catch (e) {
     flash('Save failed: ' + e.message, true);
+    return false;
   } finally {
     btn.disabled = false;
   }
@@ -502,8 +507,7 @@ async function IntakeEditorPage(c: Context<{ Bindings: Env }>, draft: IntakeDraf
     latestBuildState = buildRow?.state ?? null;
     workflowNeverStarted = !buildRow;
   }
-  const recoveryOpen =
-    latestBuildState === "FAILED" || latestBuildState === "DEGRADED" || latestBuildState === "HUMAN_REVIEW_REQUIRED";
+  const recoveryOpen = await isDraftRecoveryOpen(c.env, draft);
   const business = draft.payload.business;
   const prefs = draft.payload.designPreferences ?? {};
   const converted = Boolean(draft.convertedSiteGenerationId);
@@ -538,8 +542,9 @@ async function IntakeEditorPage(c: Context<{ Bindings: Env }>, draft: IntakeDraf
             {draft.businessName} — converted ({draft.convertedBuildMode})
           </h2>
           <p class="muted">
-            This draft is immutable after Validate &amp; Generate. Later factual changes are Fact Updates inside a Revision
-            Request on the site page.
+            {recoveryOpen
+              ? "Recovery is open, so this draft can be corrected. Earlier submissions stay exactly as they were generated."
+              : "This draft is locked after Validate & Generate. Later factual changes are Fact Updates inside a Revision Request on the site page."}
           </p>
           <a class="badge ready" href={`/sites/${draft.convertedSiteId}`}>
             Open site review
@@ -556,25 +561,12 @@ async function IntakeEditorPage(c: Context<{ Bindings: Env }>, draft: IntakeDraf
           ) : null}
           {recoveryOpen ? (
             <>
-              <h3 style={{ margin: "1rem 0 0.25rem" }}>Images for the next generation</h3>
-            <label for="image-import">Imported images (optional) — one per line: https://… (or an uploaded r2: entry) | page (home/about/services/contact, optional) | alt text (optional)</label>
-            <textarea id="image-import" style={{ "min-height": "5rem" }}>{(draft.payload.imageImport?.images ?? []).map((i) => ("r2Key" in i ? "r2:" + i.r2Key : i.url) + (i.page || i.alt ? " | " + (i.page ?? "") : "") + (i.alt ? " | " + i.alt : "")).join("\n")}</textarea>
-            <div class="field">
-              <label for="image-import-files">…or import from your computer (PNG / JPEG / WebP, up to 8 MB each)</label>
-              <input type="file" id="image-import-files" accept="image/png,image/jpeg,image/webp" multiple />
-              <button type="button" class="secondary" onclick="uploadImportImages()">Upload selected images</button>
-            </div>
-            <label for="image-import-policy">When imported images don't cover every slot</label>
-            <select id="image-import-policy">
-              <option value="IMPORTED_THEN_GENERATE" selected={(draft.payload.imageImport?.policy ?? "IMPORTED_THEN_GENERATE") === "IMPORTED_THEN_GENERATE"}>Generate the remaining images with AI</option>
-              <option value="IMPORTED_ONLY" selected={draft.payload.imageImport?.policy === "IMPORTED_ONLY"}>No AI images — reuse the imported ones</option>
-            </select>
-            <button type="button" class="secondary" onclick="saveImageImport()">Save images</button>
-
+              <h3 style={{ margin: "1rem 0 0.25rem" }}>Recovery</h3>
               <p style={{ margin: "0.75rem 0 0" }}>
                 The latest build ended <strong>{latestBuildState}</strong> with no publishable release. Recovery starts a
                 NEW generation on this same site and Build Mode from a fresh immutable submission built from this draft's
-                current payload — history is preserved, nothing is auto-published.
+                current payload — history is preserved, nothing is auto-published. Correct the draft below first; your
+                changes are saved when recovery starts.
               </p>
               {publicEmailConfirm}
               <button type="button" class="secondary" onclick="regenerate()">
@@ -583,9 +575,10 @@ async function IntakeEditorPage(c: Context<{ Bindings: Env }>, draft: IntakeDraf
             </>
           ) : null}
         </div>
-      ) : (
+      ) : null}
+      {!converted || recoveryOpen ? (
         <>
-          {draft.status === "REJECTED" ? (
+          {!converted && draft.status === "REJECTED" ? (
             <div class="card">
               <h2>Rejected submission — rescue path</h2>
               <p>
@@ -689,55 +682,57 @@ async function IntakeEditorPage(c: Context<{ Bindings: Env }>, draft: IntakeDraf
             <p class="muted">Submitter: {draft.submitterName} &lt;{draft.submitterEmail}&gt; — private intake contact, never a public Business Fact.</p>
             <div class="actions">
               <button type="button" id="save-btn" class="secondary" onclick="saveDraft(true)">
-                Save (mark In Review)
+                {converted ? "Save corrections" : "Save (mark In Review)"}
               </button>
             </div>
           </div>
-          <div class="card">
-            <h2>Validate &amp; Generate</h2>
-            <p class="muted">This is the ONLY action that starts generation. It is idempotent — a draft generates once.</p>
-            <label for="build-mode">Build Mode (admin decision)</label>
-            <select id="build-mode" onchange="modeChanged()">
-              <option value="">Choose…</option>
-              <option value="ORIGINAL_DESIGN">ORIGINAL_DESIGN (no reference; client notes become creative direction)</option>
-              <option value="REFERENCE_BOUND">REFERENCE_BOUND (reference URL / screenshot is the design origin)</option>
-            </select>
-            <div id="od-panel" class="hidden">
-              <label for="cd-direction">Creative direction (required — at minimum the direction)</label>
-              <textarea id="cd-direction">{prefs.direction ?? ""}</textarea>
-              <div class="grid-2">
-                {textField("cd-audience", "Audience", prefs.audience ?? "")}
-                {textField("cd-goal", "Conversion goal", prefs.conversionGoal ?? "")}
-                {textField("cd-environment", "Service environment", prefs.serviceEnvironment ?? "")}
-                {textField("cd-palette", "Preferred palette", prefs.preferredPalette ?? "")}
-                {textField("cd-style", "Visual style", prefs.visualStyle ?? "")}
-                {textField("cd-tone", "Tone", prefs.tone ?? "")}
-                {textField("cd-avoid", "Avoidances", prefs.avoidances ?? "")}
-                {textField("cd-inspiration", "Inspiration notes", prefs.inspirationNotes ?? "")}
+          {converted ? null : (
+            <div class="card">
+              <h2>Validate &amp; Generate</h2>
+              <p class="muted">This is the ONLY action that starts generation. It is idempotent — a draft generates once.</p>
+              <label for="build-mode">Build Mode (admin decision)</label>
+              <select id="build-mode" onchange="modeChanged()">
+                <option value="">Choose…</option>
+                <option value="ORIGINAL_DESIGN">ORIGINAL_DESIGN (no reference; client notes become creative direction)</option>
+                <option value="REFERENCE_BOUND">REFERENCE_BOUND (reference URL / screenshot is the design origin)</option>
+              </select>
+              <div id="od-panel" class="hidden">
+                <label for="cd-direction">Creative direction (required — at minimum the direction)</label>
+                <textarea id="cd-direction">{prefs.direction ?? ""}</textarea>
+                <div class="grid-2">
+                  {textField("cd-audience", "Audience", prefs.audience ?? "")}
+                  {textField("cd-goal", "Conversion goal", prefs.conversionGoal ?? "")}
+                  {textField("cd-environment", "Service environment", prefs.serviceEnvironment ?? "")}
+                  {textField("cd-palette", "Preferred palette", prefs.preferredPalette ?? "")}
+                  {textField("cd-style", "Visual style", prefs.visualStyle ?? "")}
+                  {textField("cd-tone", "Tone", prefs.tone ?? "")}
+                  {textField("cd-avoid", "Avoidances", prefs.avoidances ?? "")}
+                  {textField("cd-inspiration", "Inspiration notes", prefs.inspirationNotes ?? "")}
+                </div>
               </div>
-            </div>
-            <div id="rb-panel" class="hidden">
-              {textField("reference-url", "Reference URL", draft.payload.referenceUrl ?? "", "url")}
-              <label for="screenshot-input">Reference screenshot (PNG/JPEG, max 9 MB)</label>
-              <input type="file" id="screenshot-input" accept="image/png,image/jpeg" />
+              <div id="rb-panel" class="hidden">
+                {textField("reference-url", "Reference URL", draft.payload.referenceUrl ?? "", "url")}
+                <label for="screenshot-input">Reference screenshot (PNG/JPEG, max 9 MB)</label>
+                <input type="file" id="screenshot-input" accept="image/png,image/jpeg" />
+                <div class="actions">
+                  <button type="button" class="secondary" onclick="uploadScreenshot()">
+                    Upload screenshot
+                  </button>
+                </div>
+                {draft.payload.referenceScreenshotR2Key ? <p class="muted">Stored: {draft.payload.referenceScreenshotR2Key}</p> : null}
+                <p class="muted">Client design preferences stay visible above as CLIENT NOTES — they never enter a REFERENCE_BOUND submission.</p>
+              </div>
+              {publicEmailConfirm}
               <div class="actions">
-                <button type="button" class="secondary" onclick="uploadScreenshot()">
-                  Upload screenshot
+                <span class="muted spacer">The Generate button unlocks once a Build Mode is chosen.</span>
+                <button type="button" id="generate-btn" onclick="generate()" disabled>
+                  Validate &amp; Generate
                 </button>
               </div>
-              {draft.payload.referenceScreenshotR2Key ? <p class="muted">Stored: {draft.payload.referenceScreenshotR2Key}</p> : null}
-              <p class="muted">Client design preferences stay visible above as CLIENT NOTES — they never enter a REFERENCE_BOUND submission.</p>
             </div>
-            {publicEmailConfirm}
-            <div class="actions">
-              <span class="muted spacer">The Generate button unlocks once a Build Mode is chosen.</span>
-              <button type="button" id="generate-btn" onclick="generate()" disabled>
-                Validate &amp; Generate
-              </button>
-            </div>
-          </div>
+          )}
         </>
-      )}
+      ) : null}
       <script dangerouslySetInnerHTML={{ __html: EDITOR_JS(`/api/admin/intake-drafts/${draft.id}`, draft.convertedBuildMode) }} />
     </Layout>
   );
