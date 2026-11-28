@@ -8,7 +8,7 @@ import { startSiteGeneration, createInitialBuild } from "../src/domain/lifecycle
 import { runBuildPipeline } from "../src/domain/build-pipeline";
 import { matchImportsToSlots, type FetchedImport } from "../src/domain/image-import";
 import type { ImageSlot } from "../src/domain/site-contracts";
-import type { RawAiGenerate } from "../src/domain/ai-boundary";
+import { AiStageSchemaInvalidError, rejectedReplyKey, type RawAiGenerate } from "../src/domain/ai-boundary";
 import {
   PhotoCatalogError,
   ensurePhotoCatalog,
@@ -93,6 +93,21 @@ describe("photo catalog", () => {
     await expect(
       ensurePhotoCatalog(env, { ...input, generate: async (_system, user) => reply(describeReply(user, { skip: 2 })) })
     ).rejects.toBeInstanceOf(PhotoCatalogError);
+  });
+
+  it("keeps the raw reply of every rejected attempt for diagnosis", async () => {
+    const input = await context(1);
+    await expect(
+      ensurePhotoCatalog(env, { ...input, generate: async () => reply('{"photos":[]} and then more') })
+    ).rejects.toBeInstanceOf(AiStageSchemaInvalidError);
+    const runs = await env.DB.prepare("SELECT run_id, attempt FROM ai_stage_runs WHERE build_id = ? ORDER BY attempt")
+      .bind(input.buildId)
+      .all<{ run_id: string; attempt: number }>();
+    expect(runs.results).toHaveLength(2);
+    for (const run of runs.results) {
+      const body = await getObject(env, rejectedReplyKey(input.buildId, 1, "simple-photo-catalog", run.run_id, run.attempt));
+      expect(await new Response(body).text()).toBe('{"photos":[]} and then more');
+    }
   });
 
   it("binds the photo a slot was designed around, whatever its shape", () => {
