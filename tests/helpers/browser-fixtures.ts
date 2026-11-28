@@ -383,6 +383,10 @@ class FixturePage implements BrowserPage {
       el.toggleState = "closed";
     }
   }
+  async measureTextContrast(): Promise<{ violations: number; offenders: string[] }> {
+    this.ensureOpen();
+    return { violations: 0, offenders: [] };
+  }
   async showAllRevealElements(): Promise<void> {
     this.ensureOpen();
     this.ledger.push({ kind: "showAllRevealElements" });

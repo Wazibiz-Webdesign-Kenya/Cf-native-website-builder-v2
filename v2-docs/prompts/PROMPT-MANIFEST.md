@@ -27,6 +27,12 @@ contradictory clauses inside the retained detailed body.
 | Visual QA (v4: all-page renders; mobile defects outrank desktop polish) | `simple-visual-qa/v4` | `simple/03-visual-qa.md` |
 | Site Repair — the ONE repair (v3: multimodal sight + structural-defect rule + copy style) | `simple-site-repair/v3` | `simple/04-site-repair.md` |
 
+## Both Build Modes, when the submission supplies photos (decision 139)
+
+| Stage | prompt id/version | Detailed body |
+|---|---|---|
+| Imported Photo Catalog (multimodal, up to 4 photos per call, before the Design Blueprint) | `simple-photo-catalog/v1` | `simple/07-photo-catalog.md` |
+
 ## ORIGINAL_DESIGN — SIMPLE pipeline stages (issue #24, enabled 2026-09-12)
 
 Both Build Modes share EVERYTHING downstream of the Design Blueprint. The

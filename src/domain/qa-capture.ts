@@ -259,6 +259,16 @@ export function createProductionQaCapture(env: Env, previewUrl: string, options?
           if (entry.firstViewport) {
             capture.firstViewportScreenshot = await page.screenshot({ fullPage: false });
           }
+          // Last, because it scrolls and restyles the page. A measurement
+          // that cannot run is logged and recorded as absent, never as a pass
+          // with zero findings.
+          if (entry.viewportWidth <= 500) {
+            try {
+              runtime.textContrast = await page.measureTextContrast();
+            } catch (error) {
+              console.warn(`text contrast measurement failed for ${entry.page}: ${(error as Error).message}`);
+            }
+          }
           captures.push(capture);
         } finally {
           await page.close();

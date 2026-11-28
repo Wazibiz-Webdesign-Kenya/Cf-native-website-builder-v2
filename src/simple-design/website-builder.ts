@@ -52,6 +52,7 @@
 // Preflight enforces BEFORE it is frozen as the stage artifact.
 
 import type { Env } from "../env.d";
+import { PHOTO_TRUTH_RULE } from "./photo-catalog";
 import { Value } from "@sinclair/typebox/value";
 import {
   runAiFileStage,
@@ -208,6 +209,9 @@ export interface AcceptedImageDescriptor {
   priority: ImageSlotPriority;
   /** Deterministic convenience: priority === "CRITICAL". */
   required: boolean;
+  /** Set when a supplied photo fills the slot: what that photo really shows.
+   *  altText is then the photo's, not the Blueprint's plan. */
+  shows?: string;
 }
 
 export interface RunSimpleWebsiteBuilderInput {
@@ -307,9 +311,10 @@ function buildSharedContext(input: RunSimpleWebsiteBuilderInput): string {
   const accepted = input.acceptedImages
     .map(
       (image) =>
-        `- ${image.slotId} [${image.page}${image.section ? `/${image.section}` : ""}] ${image.aspectRatio} — priority: ${image.priority}${image.required ? " (MANDATORY)" : ""} — alt: ${image.altText}`
+        `- ${image.slotId} [${image.page}${image.section ? `/${image.section}` : ""}] ${image.aspectRatio} — priority: ${image.priority}${image.required ? " (MANDATORY)" : ""} — alt: ${image.altText}${image.shows ? ` — REAL PHOTO, shows: ${image.shows}` : ""}`
     )
     .join("\n");
+  const photoTruth = input.acceptedImages.some((image) => image.shows) ? `\n${PHOTO_TRUTH_RULE}\n` : "";
   return `DESIGN BLUEPRINT (design authority — realize it faithfully; it is complete and implementation-ready):
 ${JSON.stringify(input.blueprint)}
 
@@ -318,7 +323,7 @@ ${JSON.stringify(input.facts)}
 ${input.humanRevisionInstruction ? `\n${renderHumanRevisionInstruction(input.humanRevisionInstruction)}\n` : ""}
 ACCEPTED IMAGES (the ONLY images you may reference, as <img src="IMG:{slotId}" data-image-id="{slotId}" alt="...">):
 ${input.acceptedImages.length > 0 ? accepted : "(none yet — build WITHOUT images; do not invent slot ids)"}
-
+${photoTruth}
 MANDATORY CRITICAL IMAGE PLACEMENTS (the Builder's own release contract — every entry below MUST be used on its page, in its section, by its exact slot id; a bundle that omits any entry is INVALID and is rejected before assembly):
 ${buildCriticalImageLedger(input.acceptedImages)}
 

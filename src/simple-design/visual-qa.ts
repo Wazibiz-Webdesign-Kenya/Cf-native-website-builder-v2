@@ -37,7 +37,20 @@ export interface RunSimpleVisualQaInput {
   /** ORIGINAL_DESIGN mode: the rendered candidate is judged against the
    *  Blueprint + Creative Direction (no Reference screenshots attached). */
   originalDesign?: { creativeDirectionBrief: string };
+  /** Supplied photos placed in the candidate and what each really shows. */
+  placedPhotos?: Array<{ slotId: string; shows: string }>;
   generate?: RawAiGenerate;
+}
+
+function placedPhotosBlock(input: RunSimpleVisualQaInput): string {
+  if (!input.placedPhotos || input.placedPhotos.length === 0) return "";
+  const lines = input.placedPhotos.map((photo) => `- ${photo.slotId}: ${photo.shows}`).join("\n");
+  return `
+
+SUPPLIED REAL PHOTOS in this candidate (what each one actually shows):
+${lines}
+
+These photos are fixed. Do not lower scores because a photo's subject differs from imagery the Blueprint described. A caption, heading or adjacent copy that claims a photo shows something it does not is a serious truth defect: report it as a finding.`;
 }
 
 export interface SimpleVisualQaResult {
@@ -155,7 +168,8 @@ export async function runSimpleVisualQaStage(env: Env, input: RunSimpleVisualQaI
     stage: stageKey,
     schema: VisualQaReportSchema,
     schemaVersion: SIMPLE_VISUAL_QA_SCHEMA_VERSION,
-    userPrompt: isOriginalDesign ? buildOriginalVisualQaUserPrompt(input) : buildVisualQaUserPrompt(input),
+    userPrompt:
+        (isOriginalDesign ? buildOriginalVisualQaUserPrompt(input) : buildVisualQaUserPrompt(input)) + placedPhotosBlock(input),
     buildId: input.buildId,
     siteGenerationId: input.siteGenerationId,
     buildVersionId: input.buildVersionId,

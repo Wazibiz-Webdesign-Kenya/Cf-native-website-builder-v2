@@ -153,6 +153,28 @@ export function applyContactReachability(html: string): string {
   });
 }
 
+// ── Supplied photos ─────────────────────────────────────────────────────────
+
+function escapeAttribute(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Alt text of a supplied photo is a fact about that photo, so the platform
+ * writes it from the photo catalog. An authored alt="" (a repeated or
+ * decorative use) stays empty. `altBySrc` is keyed by the bundled image path.
+ */
+export function applyPhotoAlt(html: string, altBySrc: ReadonlyMap<string, string>): string {
+  if (altBySrc.size === 0) return html;
+  return html.replace(IMG_TAG, (tag: string) => {
+    const alt = altBySrc.get(/\ssrc\s*=\s*"([^"]*)"/i.exec(tag)?.[1] ?? "");
+    if (alt === undefined || /\salt\s*=\s*(?:""|'')/i.test(tag)) return tag;
+    const attribute = ` alt="${escapeAttribute(alt)}"`;
+    const existing = /\salt\s*=\s*(?:"[^"]*"|'[^']*')/i;
+    return existing.test(tag) ? tag.replace(existing, () => attribute) : addAttributes(tag, [attribute.trim()]);
+  });
+}
+
 // ── Images ──────────────────────────────────────────────────────────────────
 
 const SIZED_MARKER = "data-wz-sized";

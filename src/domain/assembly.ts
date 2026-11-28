@@ -22,7 +22,7 @@ import type { PreflightCheck } from "./technical-preflight";
 import type { ImageSlot } from "./site-contracts";
 import { getSiteAddress } from "./site-address";
 import { sniffImageDimensions, type ImageDimensions } from "../lib/image-dimensions";
-import { IMAGE_SIZING_CSS, applyCanonicalLink, applyContactReachability, applyImageAttributes, applyJsonLd, buildBusinessJsonLd, buildRobotsTxt, buildSitemapXml, canonicalUrl } from "./web-standards";
+import { IMAGE_SIZING_CSS, applyCanonicalLink, applyContactReachability, applyImageAttributes, applyPhotoAlt, applyJsonLd, buildBusinessJsonLd, buildRobotsTxt, buildSitemapXml, canonicalUrl } from "./web-standards";
 import type { BusinessFacts } from "./lifecycle-schema";
 
 export interface AssemblyInput {
@@ -41,6 +41,8 @@ export interface AssemblyInput {
   /** The Build's effective Business Facts. When present, the platform writes
    *  the structured data and drops any the Builder wrote. */
   facts?: BusinessFacts;
+  /** Slot -> catalog alt text for slots filled by supplied photos. */
+  photoAltBySlot?: ReadonlyMap<string, string>;
   /** Issue #66 §16: pageId -> the effective stage-artifact subkey composing
    *  this candidate. Frozen into the assembled manifest so "which Home?
    *  which About?" is answerable from the candidate itself. */
@@ -149,6 +151,12 @@ export async function buildAssembledCandidate(env: Env, input: AssemblyInput): P
     .first<{ site_id: string }>();
   const siteUrl = generation ? ((await getSiteAddress(env, generation.site_id))?.url ?? null) : null;
 
+  const photoAltBySrc = new Map<string, string>();
+  for (const [slotId, alt] of input.photoAltBySlot ?? []) {
+    const publicPath = publicPathBySlot.get(slotId);
+    if (publicPath) photoAltBySrc.set(publicPath, alt);
+  }
+
   const pages: Record<string, string> = {};
   for (const [pageId, html] of Object.entries(input.pages)) {
     const resolved = html
@@ -164,7 +172,7 @@ export async function buildAssembledCandidate(env: Env, input: AssemblyInput): P
         publicPathBySlot.has(slotId) ? `href="assets/images/${slotId}.webp"` : full
       );
     const standardized = applyCanonicalLink(
-      applyContactReachability(applyImageAttributes(resolved, dimensionsBySrc)),
+      applyContactReachability(applyImageAttributes(applyPhotoAlt(resolved, photoAltBySrc), dimensionsBySrc)),
       siteUrl ? canonicalUrl(siteUrl, pageId) : null
     );
     pages[pageId] = injectBuildVersionMarker(standardized, input.buildVersionId);

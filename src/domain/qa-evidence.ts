@@ -49,6 +49,8 @@ export interface PageCapture {
      *  interactive controls below the 44x36px touch minimum. Populated on
      *  mobile-width captures; absent on older evidence and desktop widths. */
     tapTargets?: { violations: number; offenders: string[] };
+    /** Unreadable-text measurement at mobile widths (decision 139). */
+    textContrast?: { violations: number; offenders: string[] };
   };
 }
 
@@ -104,6 +106,7 @@ export interface QaEvidenceBundle {
     /** Tap-target audit at mobile widths (operator GO 2026-11-10); absent on
      *  pre-GO bundles and desktop-width captures. */
     tapTargets?: { violations: number; offenders: string[] };
+    textContrast?: { violations: number; offenders: string[] };
   }>;
   createdAt: string;
 }
@@ -165,6 +168,7 @@ export async function buildStandardEvidenceBundle(
       consoleErrorCount: capture.runtime?.consoleErrors.length ?? 0,
       failedRequestCount: capture.runtime?.failedRequests.length ?? 0,
       ...(capture.runtime?.tapTargets ? { tapTargets: capture.runtime.tapTargets } : {}),
+      ...(capture.runtime?.textContrast ? { textContrast: capture.runtime.textContrast } : {}),
     });
   }
 

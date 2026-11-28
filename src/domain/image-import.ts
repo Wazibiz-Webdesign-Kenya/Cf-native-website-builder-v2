@@ -58,13 +58,28 @@ function slotOrientationFits(slot: ImageSlot, image: FetchedImport): boolean {
 export function matchImportsToSlots(
   slots: ImageSlot[],
   images: FetchedImport[],
-  policy: ImageImport["policy"]
+  policy: ImageImport["policy"],
+  /** Slot -> import index the Blueprint planned the slot around. The photo's
+   *  content beats orientation and page hints: CSS can crop, it cannot
+   *  change what a photo shows. */
+  preferred: ReadonlyMap<string, number> = new Map()
 ): SlotAssignment[] {
   const ordered = [...slots].sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]);
   const used = new Set<number>();
   const assignments: SlotAssignment[] = [];
+  const planned = (slot: ImageSlot) => images.find((image) => image.index === preferred.get(slot.id));
 
   for (const slot of ordered) {
+    const image = planned(slot);
+    if (!image) continue;
+    const reused = used.has(image.index);
+    if (reused && policy !== "IMPORTED_ONLY") continue;
+    used.add(image.index);
+    assignments.push({ slotId: slot.id, importIndex: image.index, reused });
+  }
+
+  for (const slot of ordered) {
+    if (assignments.some((entry) => entry.slotId === slot.id)) continue;
     let best: { image: FetchedImport; score: number } | null = null;
     for (const image of images) {
       if (used.has(image.index)) continue;
@@ -178,6 +193,19 @@ export async function getSubmissionImageImport(env: Env, submissionId: string): 
   return (JSON.parse(row.payload_json) as OnboardingSubmissionPayload).imageImport ?? null;
 }
 
+/** Every usable photo of an import configuration, in list order. */
+export async function loadImportedPhotos(
+  env: Env,
+  config: ImageImport,
+  fetcher: ImageFetcher = (url, signal) => fetch(url, { signal, redirect: "follow" })
+): Promise<{ photos: FetchedImport[]; rejected: ImportRejection[] }> {
+  const results = await Promise.all(config.images.map((entry, index) => fetchImport(index, entry, fetcher, env)));
+  return {
+    photos: results.filter((result): result is FetchedImport => "bytes" in result),
+    rejected: results.filter((result): result is ImportRejection => !("bytes" in result)),
+  };
+}
+
 export async function importImagesForVersion(
   env: Env,
   input: {
@@ -186,6 +214,7 @@ export async function importImagesForVersion(
     buildVersionId: string;
     buildVersionNumber: number;
     slots: ImageSlot[];
+    preferred?: ReadonlyMap<string, number>;
     fetcher?: ImageFetcher;
   }
 ): Promise<ImageImportResult> {
@@ -222,7 +251,7 @@ export async function importImagesForVersion(
     }
   }
 
-  const assignments = matchImportsToSlots(openSlots, fetched, config.policy);
+  const assignments = matchImportsToSlots(openSlots, fetched, config.policy, input.preferred);
   const createdAt = nowIso();
   const byIndex = new Map(fetched.map((image) => [image.index, image] as const));
   const checksums = new Map<number, string>();
