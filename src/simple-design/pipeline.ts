@@ -72,6 +72,13 @@ import type { BuilderFileKind } from "./builder-file-realization";
 import type { SimpleBuilderVisualInput } from "./contracts";
 import { runSimpleVisualQaStage } from "./visual-qa";
 import { runSimpleSiteRepairStage } from "./site-repair";
+import {
+  PhotoCatalogError,
+  ensurePhotoCatalog,
+  placedPhotosBySlot,
+  preferredImportsBySlot,
+  renderPhotoCatalogForBlueprint,
+} from "./photo-catalog";
 import { runDeterministicBundleQa } from "./bundle-qa";
 import { buildSimpleQaPackage, finalizeSimpleRelease, simpleReleaseVerdict, storeSimpleQaPackage } from "./qa-package";
 
@@ -359,6 +366,50 @@ export async function runSimpleBuildPipeline(
     // evidence 2026-11-02..06 showed regeneration turning careful fix notes
     // into fidelity-0 rebuilds. An explicit redesign note regenerates, with
     // the note riding the Blueprint call as a bounded intent block.
+    // ── SUPPLIED PHOTOS (decision 139): look at them BEFORE designing, so
+    // the design, alt text, captions and QA all rest on what they show.
+    const preBlueprintState = buildMode === "ORIGINAL_DESIGN" ? "REFERENCE_CHECK" : "REFERENCE_EVIDENCE";
+    const catalogResult = await stepDo("simple: photo catalog", async () => {
+      try {
+        const catalog = await ensurePhotoCatalog(env, {
+          submissionId,
+          siteGenerationId: input.siteGenerationId,
+          buildId,
+          buildVersionId: version.buildVersionId,
+          buildVersionNumber: version.buildVersionNumber,
+          ...(deps.visionGenerate ? { generate: deps.visionGenerate } : deps.generate ? { generate: deps.generate } : {}),
+        });
+        if (catalog) {
+          await appendBuildWorkflowEvent(env, {
+            buildId,
+            buildVersionId: version.buildVersionId,
+            fromState: preBlueprintState,
+            toState: preBlueprintState,
+            stage: "simple_photo_catalog",
+            detail: `${catalog.photos.length} supplied photo(s) described before design (policy=${catalog.policy})`,
+          });
+        }
+        return { kind: "ok" as const, catalog };
+      } catch (error) {
+        if (error instanceof PhotoCatalogError || error instanceof AiStageSchemaInvalidError) {
+          return { kind: "review" as const, reason: `PHOTO_CATALOG_REVIEW_REQUIRED: ${error.message}` };
+        }
+        throw error;
+      }
+    });
+    if (catalogResult.kind !== "ok") {
+      await appendBuildWorkflowEvent(env, {
+        buildId,
+        buildVersionId: version.buildVersionId,
+        fromState: preBlueprintState,
+        toState: "HUMAN_REVIEW_REQUIRED",
+        stage: "simple_photo_catalog",
+        detail: catalogResult.reason.slice(0, 400),
+      });
+      return terminal("HUMAN_REVIEW_REQUIRED", [catalogResult.reason]);
+    }
+    const photoCatalog = catalogResult.catalog;
+
     const blueprintResult = await stepDo("simple: design blueprint", (): Promise<
       | { kind: "ok"; blueprint: DesignBlueprintV2; artifactR2Key: string; schemaVersion: string }
       | { kind: "review"; reason: string }
@@ -431,6 +482,7 @@ export async function runSimpleBuildPipeline(
             ...(humanRevisionInstruction && revisionRequestsRedesign(humanRevisionInstruction)
               ? { humanRevisionInstruction }
               : {}),
+            ...(photoCatalog ? { suppliedPhotosBlock: renderPhotoCatalogForBlueprint(photoCatalog) } : {}),
             ...(deps.visionGenerate ? { generate: deps.visionGenerate } : {}),
             ...(deps.generate ? { generate: deps.generate } : {}),
           });
@@ -465,7 +517,7 @@ export async function runSimpleBuildPipeline(
     // deterministic domain construction — the materialized plan is the ONLY
     // image representation downstream stages see.
     const imagePlan = materializeBlueprintImageSlots(blueprint);
-    const acceptedImageDescriptors = materializeAcceptedImageDescriptors(blueprint);
+    const plannedImageDescriptors = materializeAcceptedImageDescriptors(blueprint);
     await appendBuildWorkflowEvent(env, {
       buildId,
       buildVersionId: version.buildVersionId,
@@ -489,6 +541,7 @@ export async function runSimpleBuildPipeline(
         buildVersionId: version.buildVersionId,
         buildVersionNumber: version.buildVersionNumber,
         slots: imagePlan,
+        preferred: preferredImportsBySlot(materializeBlueprintPromptRecords(blueprint).map((record) => ({ slotId: record.slotId, brief: record.promptText }))),
       });
       if (result.requested > 0) {
         await appendBuildWorkflowEvent(env, {
@@ -528,6 +581,17 @@ export async function runSimpleBuildPipeline(
       return null;
     });
 
+    // What each slot REALLY shows now replaces what the Blueprint planned.
+    // Repair versions reuse these Accepted Images, so one read governs all.
+    const placedPhotos = await stepDo("simple: placed photo truth", async () =>
+      photoCatalog ? [...(await placedPhotosBySlot(env, version.buildVersionId, photoCatalog))] : []
+    );
+    const placedBySlot = new Map(placedPhotos);
+    const acceptedImageDescriptors = plannedImageDescriptors.map((descriptor) => {
+      const photo = placedBySlot.get(descriptor.slotId);
+      return photo ? { ...descriptor, altText: photo.alt, shows: photo.shows } : descriptor;
+    });
+
     // ── Build + QA + bounded ONE repair ─────────────────────────────────────
     const formServiceEndpoint = `${env.PUBLIC_APP_URL}/api/v2/forms/submit`;
     const siteFormId = `site:${siteId}`;
@@ -555,6 +619,7 @@ export async function runSimpleBuildPipeline(
             formServiceEndpoint,
             expectedSiteFormId: siteFormId,
             facts,
+            photoAltBySlot: new Map(placedPhotos.map(([slotId, photo]) => [slotId, photo.alt] as const)),
           });
           await freezeAssembledCandidate(env, {
             siteGenerationId: ctx.siteGenerationId,
@@ -642,6 +707,9 @@ export async function runSimpleBuildPipeline(
                   (sum, c) => sum + (c.tapTargets?.violations ?? 0),
                   0
                 ),
+                unreadableTextOffenders: evidenceBundle.bundle.captures.flatMap((c) =>
+                  (c.textContrast?.offenders ?? []).map((offender) => `${c.page}: ${offender}`)
+                ),
                 tapTargetOffenders: [
                   ...new Set(
                     evidenceBundle.bundle.captures.flatMap((c) => c.tapTargets?.offenders ?? [])
@@ -672,6 +740,9 @@ export async function runSimpleBuildPipeline(
               candidateDesktopR2Key: candidateDesktop,
               ...(candidateMobile ? { candidateMobileR2Key: candidateMobile } : {}),
               ...(candidateInnerPages.length > 0 ? { candidateInnerPageR2Keys: candidateInnerPages } : {}),
+              ...(placedPhotos.length > 0
+                ? { placedPhotos: placedPhotos.map(([slotId, photo]) => ({ slotId, shows: photo.shows })) }
+                : {}),
               ...(deps.visionGenerate ? { generate: deps.visionGenerate } : {}),
               ...(deps.generate ? { generate: deps.generate } : {}),
             })).report;

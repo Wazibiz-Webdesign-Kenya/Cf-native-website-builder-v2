@@ -8,6 +8,7 @@
 // failed version.
 
 import type { Env } from "../env.d";
+import { PHOTO_TRUTH_RULE } from "./photo-catalog";
 import { getObject } from "../lib/assets";
 import {
   runSchemaValidatedAiStage,
@@ -112,7 +113,7 @@ export interface RunSimpleSiteRepairInput {
   blueprint: DesignBlueprintV2;
   facts: BusinessFacts;
   qaPackage: QaPackage;
-  acceptedImages: Array<{ slotId: string; altText: string; aspectRatio: string }>;
+  acceptedImages: Array<{ slotId: string; altText: string; aspectRatio: string; shows?: string }>;
   formServiceEndpoint: string;
   siteFormId: string;
   /** Reference visual inputs — REFERENCE_BOUND only. ORIGINAL_DESIGN has no
@@ -192,8 +193,9 @@ export function failedFilesFromQaPackage(pkg: QaPackage): string[] {
 // current bundle as context even though it returns only changed files.
 export function buildRepairUserPrompt(input: RunSimpleSiteRepairInput): string {
   const images = input.acceptedImages
-    .map((image) => `- ${image.slotId} [${image.aspectRatio}] — alt: ${image.altText}`)
+    .map((image) => `- ${image.slotId} [${image.aspectRatio}] — alt: ${image.altText}${image.shows ? ` — REAL PHOTO, shows: ${image.shows}` : ""}`)
     .join("\n");
+  const photoTruth = input.acceptedImages.some((image) => image.shows) ? `\n${PHOTO_TRUTH_RULE}\n` : "";
   const failedFiles = failedFilesFromQaPackage(input.qaPackage);
   const hasReference = (input.referenceVisualInputs?.length ?? 0) > 0;
   const innerPageCount = input.candidateInnerPageR2Keys?.length ?? 0;
@@ -239,6 +241,7 @@ PRESERVATION SET (absolute — spec section 50): Business Facts below, contact d
 
 ACCEPTED IMAGES (unchanged mappings):
 ${input.acceptedImages.length > 0 ? images : "(none — keep the bundle image-free)"}
+${photoTruth}
 
 BUSINESS FACTS (unchanged content authority):
 ${JSON.stringify(input.facts)}

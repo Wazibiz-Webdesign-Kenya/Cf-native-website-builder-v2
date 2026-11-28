@@ -237,6 +237,18 @@ describe("SIMPLE deterministic technical checks (spec section 38)", () => {
     expect(clean.technicalFindings.some((candidate) => candidate.id === "TAP_TARGET_TOO_SMALL")).toBe(false);
   });
 
+  it("text measured unreadable on mobile is a blocker that names the page and text (decision 139)", () => {
+    const evidence = { capturesRendered: 9, mobileCaptured: true, failedRequestCount: 0, tapTargetViolations: 0, tapTargetOffenders: [] };
+    const result = runDeterministicBundleQa(
+      qaInput({ renderEvidence: { ...evidence, unreadableTextOffenders: ['services: "Occasions in the garden" (contrast 1.0:1)'] } })
+    );
+    const finding = result.technicalFindings.find((candidate) => candidate.id === "TEXT_UNREADABLE_ON_MOBILE");
+    expect(finding?.severity).toBe("blocker");
+    expect(finding?.detail).toContain("Occasions in the garden");
+    const clean = runDeterministicBundleQa(qaInput({ renderEvidence: { ...evidence, unreadableTextOffenders: [] } }));
+    expect(clean.technicalFindings.some((candidate) => candidate.id === "TEXT_UNREADABLE_ON_MOBILE")).toBe(false);
+  });
+
   it("em dashes in visible copy are copy-style blockers naming the offending locations (operator GO 2026-11-09)", () => {
     const bundle = goodBundle();
     bundle.pages.home = page(

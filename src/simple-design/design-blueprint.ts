@@ -87,6 +87,9 @@ export interface RunSimpleDesignBlueprintInput {
    *  generation call ONLY when the revision explicitly requests a redesign —
    *  a bounded intent block like the Builder's, never a facts authority. */
   humanRevisionInstruction?: string;
+  /** Prompt block listing the supplied photos and what they show, so the
+   *  design is planned around imagery that exists (decision 139). */
+  suppliedPhotosBlock?: string;
   generate?: RawAiGenerate;
 }
 
@@ -238,7 +241,9 @@ export async function runSimpleDesignBlueprintStage(
       stage: stageKey,
       schema: DesignBlueprintV2Schema,
       schemaVersion: DESIGN_BLUEPRINT_V2_SCHEMA_VERSION,
-      userPrompt: isOriginalDesign ? buildOriginalBlueprintUserPrompt(input) : buildBlueprintUserPrompt(input),
+      userPrompt:
+        (isOriginalDesign ? buildOriginalBlueprintUserPrompt(input) : buildBlueprintUserPrompt(input)) +
+        (input.suppliedPhotosBlock ?? ""),
       buildId: input.buildId,
       siteGenerationId: input.siteGenerationId,
       buildVersionId: input.buildVersionId,

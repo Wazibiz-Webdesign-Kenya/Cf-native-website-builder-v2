@@ -34,6 +34,7 @@ function makePage(spec: { markerMatches: number }) {
       images: [{ displayedWidth: 100, naturalWidth: 200, naturalHeight: 100 }],
     })),
     measureTapTargets: vi.fn(async () => ({ violations: 0, offenders: [] })),
+    measureTextContrast: vi.fn(async () => ({ violations: 1, offenders: ['"Heading" (contrast 1.0:1)'] })),
     screenshot: vi.fn(async () => new Uint8Array([9, 9, 9])),
     close: vi.fn(async () => {}),
   };
@@ -96,6 +97,10 @@ describe("QA capture capture-session marker proof", () => {
     expect(captures).toHaveLength(2);
     expect(captures[0].page).toBe("home");
     expect(captures[1].viewportWidth).toBe(390);
+    // Unreadable text is measured on mobile only, after the screenshots.
+    expect(captures[0].runtime?.textContrast).toBeUndefined();
+    expect(captures[1].runtime?.textContrast?.violations).toBe(1);
+    expect(capturePages[0].measureTextContrast).not.toHaveBeenCalled();
     for (const page of capturePages) {
       expect(page.screenshot).toHaveBeenCalled();
     }

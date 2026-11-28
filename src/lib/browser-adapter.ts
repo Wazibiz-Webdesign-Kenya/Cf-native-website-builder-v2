@@ -15,6 +15,7 @@ import type {
 } from "../types";
 import type { ReferenceViewport } from "./viewports";
 import { EVIDENCE_ID_ATTR } from "./selector";
+import { measureTextContrastOnPage } from "./text-contrast";
 import { RENDERABLE_INTERACTION_PAIRS } from "./renderable-interactions";
 
 export interface RawBounds {
@@ -181,6 +182,9 @@ export interface BrowserPage {
    *  44x36px touch minimum. Returns the violation count plus up to 5 offender
    *  samples ("label WxH") for the repair brief. */
   measureTapTargets(): Promise<{ violations: number; offenders: string[] }>;
+  /** Pixel measurement of unreadable text (decision 139). Call after the
+   *  page's screenshots: it scrolls and briefly restyles the page. */
+  measureTextContrast(): Promise<{ violations: number; offenders: string[] }>;
   hover(selector: string): Promise<void>;
   focus(selector: string): Promise<void>;
   pressPointerDown(selector: string): Promise<void>;
@@ -393,6 +397,9 @@ function makePlaywrightPage(page: import("@cloudflare/playwright").Page): Browse
           });
         return { violations: offenders.length, offenders: offenders.slice(0, 5) };
       })()`);
+    },
+    async measureTextContrast() {
+      return measureTextContrastOnPage(page);
     },
     async hover(selector) { await page.hover(selector); },
     async focus(selector) { await page.focus(selector); },

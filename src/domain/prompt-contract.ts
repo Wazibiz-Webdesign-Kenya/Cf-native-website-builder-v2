@@ -28,11 +28,19 @@ export type PromptStageKey =
   | "simple-design-blueprint"
   | "simple-original-design-blueprint"
   | "simple-website-builder"
+  | "simple-photo-catalog"
   | "simple-visual-qa"
   | "simple-original-design-visual-qa"
   | "simple-site-repair";
 
 export const PROMPT_MANIFEST: Record<PromptStageKey, PromptManifestEntry> = {
+  // v1 (decision 139): describes supplied photos before the Blueprint, so the
+  // site can only say what the photos actually show.
+  "simple-photo-catalog": {
+    promptId: "simple-photo-catalog",
+    promptVersion: "v1",
+    bodyFile: "simple/07-photo-catalog.md",
+  },
   // v5 (operator GO, 2026-09-10): the design-blueprint/2 contract — required
   // per-page hero spec + required page-hero image briefs; hero slot ids, page
   // ownership and priorities are deterministic, never model bookkeeping.

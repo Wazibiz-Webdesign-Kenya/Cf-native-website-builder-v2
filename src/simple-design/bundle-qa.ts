@@ -85,6 +85,51 @@ export function findWebBestPracticeWarnings(
   return warnings;
 }
 
+// Claims about how the business behaves or who its customers are. Live
+// evidence 2026-11-28: "We reply personally to every enquiry" and "Most of our
+// guests come from Nairobi" shipped from facts that said neither.
+const PROMISE_PATTERNS: readonly RegExp[] = [
+  /\bwe(?:'ll| will)? (?:reply|respond|answer)\b[^.!?]{0,40}\b(?:personally|every|each|within|same day)\b/i,
+  /\b(?:reply|respond|answer)(?:s|ed)?\b[^.!?]{0,30}\bwithin \d+\s*(?:minutes?|hours?|days?)\b/i,
+  /\bevery (?:enquiry|inquiry|message) (?:\w+ )?(?:is|gets) (?:answered|a reply|a response)\b/i,
+  /\b(?:most|many|the majority) of our (?:guests|clients|customers|visitors)\b/i,
+  /\bour (?:guests|clients|customers|visitors) (?:come|travel|love|return|tell)\b/i,
+];
+
+/** A matched claim is allowed only when the Business Facts say the same words. */
+export function findUnsupportedPromises(text: string, facts: BusinessFacts): string[] {
+  const supplied = JSON.stringify(facts).toLowerCase();
+  const plain = text.replace(/’/g, "'").replace(/\s+/g, " ");
+  const claims: Array<{ start: number; end: number; text: string }> = [];
+  for (const pattern of PROMISE_PATTERNS) {
+    const match = pattern.exec(plain);
+    if (!match || supplied.includes(match[0].toLowerCase())) continue;
+    const start = match.index;
+    const end = start + match[0].length;
+    // Two patterns may describe one sentence: report it once.
+    if (claims.some((claim) => start < claim.end && end > claim.start)) continue;
+    claims.push({ start, end, text: match[0] });
+  }
+  return claims.map((claim) => `"${claim.text}" is a promise or customer claim that no Business Fact makes; remove it`);
+}
+
+const COUNT_WORDS: Record<string, number> = { two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8 };
+
+/** A heading that counts the offering must count the services supplied. */
+export function findServiceCountMismatches(html: string, facts: BusinessFacts): string[] {
+  const findings: string[] = [];
+  for (const heading of html.matchAll(/<h[1-3]\b[^>]*>([\s\S]*?)<\/h[1-3]>/gi)) {
+    const text = stripTags(heading[1]!).replace(/\s+/g, " ").trim();
+    const match = /\b(two|three|four|five|six|seven|eight|[2-8]) (?:ways to|services|offerings)\b/i.exec(text);
+    if (!match) continue;
+    const claimed = COUNT_WORDS[match[1]!.toLowerCase()] ?? Number(match[1]);
+    if (claimed !== facts.services.length) {
+      findings.push(`heading "${text}" counts ${claimed} but the Business Facts list ${facts.services.length} services`);
+    }
+  }
+  return findings;
+}
+
 export interface BundleQaInput {
   bundle: SiteBundle;
   blueprint: DesignBlueprintV2;
@@ -105,6 +150,8 @@ export interface BundleQaInput {
      *  2026-11-10); zero when the evidence predates the audit. */
     tapTargetViolations: number;
     tapTargetOffenders: string[];
+    /** "page: text (ratio)" lines measured unreadable on mobile. */
+    unreadableTextOffenders?: string[];
   } | null;
 }
 
@@ -155,6 +202,13 @@ export function runDeterministicBundleQa(input: BundleQaInput): BundleQaResult {
         id: "FABRICATED_TRUST_ENTITY",
         detail: `${pageId}: trust label '${violation.text}' is not backed by the Business Facts (${violation.context})`,
       });
+    }
+
+    for (const detail of findUnsupportedPromises(text, facts)) {
+      truthFindings.push({ id: "UNSUPPORTED_PROMISE", detail: `${pageId}: ${detail}` });
+    }
+    for (const detail of findServiceCountMismatches(html, facts)) {
+      truthFindings.push({ id: "SERVICE_COUNT_MISMATCH", detail: `${pageId}: ${detail}` });
     }
 
     // ── Technical: structure, links, slots, contract ──
@@ -289,6 +343,17 @@ export function runDeterministicBundleQa(input: BundleQaInput): BundleQaResult {
   // ── Render-evidence-backed gates (may be null when assembly failed) ──
   const evidence = input.renderEvidence;
   const evidenceOk = evidence !== null;
+
+  // UNREADABLE TEXT (decision 139): measured against the real pixels behind
+  // each line on mobile. Live evidence 2026-11-28: a released candidate had a
+  // cream hero headline on a cream background and passed visual QA at 90.
+  if (evidenceOk && (evidence.unreadableTextOffenders?.length ?? 0) > 0) {
+    technical(
+      "TEXT_UNREADABLE_ON_MOBILE",
+      "blocker",
+      `mobile: text cannot be read against what is behind it: ${evidence.unreadableTextOffenders!.slice(0, 6).join("; ")}. Make the hero image cover everything behind its text, add a solid or strong dark overlay behind light text, and give a transparent header a background or dark scrim wherever it sits over a light area`
+    );
+  }
 
   // TAP TARGETS (operator GO 2026-11-10): interactive controls measured below
   // the 44x36px touch minimum on the mobile render — real fingers cannot hit
