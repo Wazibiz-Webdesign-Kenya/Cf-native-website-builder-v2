@@ -22,7 +22,7 @@ import type { PreflightCheck } from "./technical-preflight";
 import type { ImageSlot } from "./site-contracts";
 import { getSiteAddress } from "./site-address";
 import { sniffImageDimensions, type ImageDimensions } from "../lib/image-dimensions";
-import { IMAGE_SIZING_CSS, applyCanonicalLink, applyImageAttributes, applyJsonLd, buildBusinessJsonLd, buildRobotsTxt, buildSitemapXml, canonicalUrl } from "./web-standards";
+import { IMAGE_SIZING_CSS, applyCanonicalLink, applyContactReachability, applyImageAttributes, applyJsonLd, buildBusinessJsonLd, buildRobotsTxt, buildSitemapXml, canonicalUrl } from "./web-standards";
 import type { BusinessFacts } from "./lifecycle-schema";
 
 export interface AssemblyInput {
@@ -164,7 +164,7 @@ export async function buildAssembledCandidate(env: Env, input: AssemblyInput): P
         publicPathBySlot.has(slotId) ? `href="assets/images/${slotId}.webp"` : full
       );
     const standardized = applyCanonicalLink(
-      applyImageAttributes(resolved, dimensionsBySrc),
+      applyContactReachability(applyImageAttributes(resolved, dimensionsBySrc)),
       siteUrl ? canonicalUrl(siteUrl, pageId) : null
     );
     pages[pageId] = injectBuildVersionMarker(standardized, input.buildVersionId);

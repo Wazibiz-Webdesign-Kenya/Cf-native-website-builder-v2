@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyCanonicalLink,
+  applyContactReachability,
   applyImageAttributes,
   applyJsonLd,
   buildBusinessJsonLd,
@@ -137,5 +138,37 @@ describe("image attributes", () => {
 
   it("promotes nothing when the page has no hero image", () => {
     expect(applyImageAttributes(`<section class="hero"></section><section><img src="a.webp"></section>`, sizes)).not.toContain("fetchpriority");
+  });
+});
+
+describe("contact form reachability", () => {
+  const form = (fields: string) =>
+    `<form action="https://app.example/api/v2/forms/submit" method="post">${fields}</form>`;
+
+  it("lets either phone or email reach the business, keeping other requirements", () => {
+    const html = form(
+      `<input name="name" required><input type="tel" name="phone" required="required">` +
+        `<input type="email" name="email" autocomplete="email" required aria-describedby="h"><textarea name="message" required></textarea>`
+    );
+    const result = applyContactReachability(html);
+    expect(result).toBe(
+      form(
+        `<input name="name" required><input type="tel" name="phone">` +
+          `<input type="email" name="email" autocomplete="email" aria-describedby="h"><textarea name="message" required></textarea>`
+      )
+    );
+    expect(applyContactReachability(result)).toBe(result);
+  });
+
+  it("keeps email required when it is the only way to reply", () => {
+    const html = form(`<input type="email" name="email" required>`);
+    expect(applyContactReachability(html)).toBe(html);
+  });
+
+  it("leaves other forms and attribute text alone", () => {
+    const other = `<form action="/search"><input name="phone" required><input name="email" required></form>`;
+    expect(applyContactReachability(other)).toBe(other);
+    const labelled = form(`<input name="phone"><input name="email" aria-label="Email, not required">`);
+    expect(applyContactReachability(labelled)).toBe(labelled);
   });
 });
