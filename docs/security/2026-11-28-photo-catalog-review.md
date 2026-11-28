@@ -25,3 +25,7 @@ The contrast check, run in a real browser against the two failed Tibz previews o
 - Captions are constrained and judged, not proven by code.
 - Claim patterns catch known phrasings only.
 - A contrast measurement that fails does not block a release.
+
+## Addendum: rejected replies and structural completion (decision 140)
+
+Same substitute review. No blocking finding. Rejected replies are stored under the Build's own R2 prefix; they can contain Business Facts, as accepted artifacts already do, and nothing reads them. Completion takes only the missing properties from the second reply and the merged object passes the unchanged schema and quality gates. The attempt ceiling stays two (tested).

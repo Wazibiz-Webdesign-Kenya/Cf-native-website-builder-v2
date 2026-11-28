@@ -299,6 +299,68 @@ function stripEmptyStrings(value: unknown): unknown {
   return value;
 }
 
+type ObjectSchema = TSchema & { properties: Record<string, TSchema & { properties?: Record<string, TSchema> }>; required?: string[] };
+
+function isObjectSchema(schema: TSchema): schema is ObjectSchema {
+  return typeof (schema as { properties?: unknown }).properties === "object";
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * A model that closes a nested object too early writes that object's last keys
+ * at the top level. A key the top level does not declare moves into the ONE
+ * present object property whose schema declares it and does not yet have it.
+ * Deterministic: nothing is created or rewritten, and anything ambiguous stays
+ * where it is for validation to reject.
+ */
+export function renestMisplacedKeys(schema: TSchema, value: unknown): unknown {
+  if (!isObjectSchema(schema) || !isPlainObject(value)) return value;
+  const out: Record<string, unknown> = { ...value };
+  for (const key of Object.keys(out)) {
+    if (key in schema.properties) continue;
+    const homes = Object.entries(schema.properties).filter(([name, property]) => {
+      const present = out[name];
+      return Boolean(property.properties && key in property.properties) && isPlainObject(present) && !(key in present);
+    });
+    if (homes.length !== 1) continue;
+    const [home] = homes[0]!;
+    out[home] = { ...(out[home] as Record<string, unknown>), [key]: out[key] };
+    delete out[key];
+  }
+  return out;
+}
+
+interface EarlyEndedReply {
+  present: Record<string, unknown>;
+  missing: string[];
+}
+
+/** Everything the reply contains is valid and only whole top-level properties
+ *  are absent: the object was closed before it was finished. */
+function earlyEndedReply(schema: TSchema, value: unknown): EarlyEndedReply | null {
+  if (!isObjectSchema(schema) || !isPlainObject(value)) return null;
+  const missing = (schema.required ?? []).filter((key) => !(key in value));
+  if (missing.length === 0 || Object.keys(value).length === 0) return null;
+  for (const error of Value.Errors(schema, value)) {
+    if (!missing.includes(error.path.split("/")[1] ?? "")) return null;
+  }
+  return { present: value, missing };
+}
+
+function completionPrompt(schema: ObjectSchema, reply: EarlyEndedReply): string {
+  const wanted = Object.fromEntries(reply.missing.map((key) => [key, schema.properties[key]]));
+  return `## Targeted structural repair: finish your previous response
+
+Your previous response closed the JSON object before it was complete. Everything below is valid and is KEPT exactly as written:
+${JSON.stringify(reply.present)}
+
+Return ONE JSON object containing ONLY these top-level properties: ${reply.missing.join(", ")}. Keep them consistent with the work above, include every one of them, and close the object only after the last. Schema for this object:
+${JSON.stringify({ type: "object", additionalProperties: false, required: reply.missing, properties: wanted })}`;
+}
+
 export function rejectedReplyKey(buildId: string, buildVersionNumber: number, stage: string, runId: string, attempt: number): string {
   return `builds/${buildId}/v${buildVersionNumber}/ai-rejected/${stage}-${runId}-attempt${attempt}.txt`;
 }
@@ -400,11 +462,18 @@ export async function runSchemaValidatedAiStage<T>(
     ? ""
     : `\n\n## Output contract\nReturn ONE JSON object that satisfies this JSON Schema exactly (no extra properties, every required property present, correct types). Do not wrap it in markdown or prose:\n${JSON.stringify(options.schema)}`;
 
+  // Set when attempt 1 ended early: the ONE repair then completes it.
+  let unfinished: EarlyEndedReply | null = null;
+
   for (let attempt = 1; attempt <= 2 && !accepted; attempt++) {
     const userPrompt =
       attempt === 1
         ? options.userPrompt + outputContract
-        : `${options.userPrompt}${outputContract}
+        : unfinished
+          ? `${options.userPrompt}
+
+${completionPrompt(options.schema as ObjectSchema, unfinished)}`
+          : `${options.userPrompt}${outputContract}
 
 ## Targeted structural repair
 
@@ -424,10 +493,20 @@ Return ONLY the corrected JSON object. Do not change the semantic content beyond
       outcome = "invalid";
       errorSummary = parsed.error;
     } else {
-      const candidate = truncateOverLongStrings(options.schema, stripEmptyStrings(stripNulls(parsed.value))).value;
+      let normalized = stripEmptyStrings(stripNulls(parsed.value));
+      if (unfinished && isPlainObject(normalized)) {
+        // Only the missing properties are taken: the kept work cannot change.
+        const added = normalized;
+        normalized = {
+          ...unfinished.present,
+          ...Object.fromEntries(unfinished.missing.filter((key) => key in added).map((key) => [key, added[key]])),
+        };
+      }
+      const candidate = truncateOverLongStrings(options.schema, renestMisplacedKeys(options.schema, normalized)).value;
       if (!Value.Check(options.schema, candidate)) {
         outcome = "invalid";
         errorSummary = schemaErrorSummary(options.schema, candidate);
+        if (attempt === 1) unfinished = earlyEndedReply(options.schema, candidate);
       } else {
         value = candidate as T;
         outcome = attempt === 1 ? "valid" : "repaired";
