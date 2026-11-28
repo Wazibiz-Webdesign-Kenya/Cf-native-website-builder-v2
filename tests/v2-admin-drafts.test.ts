@@ -581,6 +581,31 @@ describe("admin draft review, edit and conversion", () => {
     expect(await errorCode(await patch({ business }))).toBe("DRAFT_IMMUTABLE");
   });
 
+  it("saves the editor's blank optional fields as not provided, and still requires the required ones", async () => {
+    const env = runtimeEnv();
+    const draftId = await createDraftViaPublicForm(env, "Blank Fields Gardens");
+    const app = fullApp(env);
+    const patch = (body: Record<string, unknown>) =>
+      app.request(`https://test.example.com/api/admin/intake-drafts/${draftId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", ...ACCESS_HEADERS },
+        body: JSON.stringify(body),
+      }, env);
+    const business = { businessName: "Blank Fields Gardens", contactEmail: "hello@blank.example", ...canonicalStructuredFacts() };
+
+    const saved = await patch({
+      business: { ...business, extraInformation: "", addressLine1: "  " },
+      designPreferences: { direction: "Calm", tone: "", inspirationNotes: "" },
+    });
+    expect(saved.status).toBe(200);
+    const { draft } = (await saved.json()) as { draft: { payload: { business: object; designPreferences: object } } };
+    expect(draft.payload.business).not.toHaveProperty("extraInformation");
+    expect(draft.payload.business).not.toHaveProperty("addressLine1");
+    expect(draft.payload.designPreferences).toEqual({ direction: "Calm" });
+
+    expect((await patch({ business: { ...business, businessName: "" } })).status).toBeGreaterThanOrEqual(400);
+  });
+
   it("every field the editor script reads exists on the page, before conversion and during recovery", async () => {
     const { createInitialBuild, appendBuildWorkflowEvent } = await import("../src/domain/lifecycle");
     const env = runtimeEnv(vi.fn(async () => ({ id: "w-editor-fields" })));

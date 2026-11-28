@@ -365,6 +365,15 @@ export async function isDraftRecoveryOpen(env: Env, draft: IntakeDraft): Promise
   return row?.id === governedGenerationId && RECOVERY_ALLOWED_BUILD_STATES.has(row.state ?? "");
 }
 
+/** The editor submits untouched optional inputs as blank strings; the schema
+ *  expresses "not provided" as an absent property. A blank required field is
+ *  then reported as missing. */
+function withoutBlankFields<T extends object>(value: T): T {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => typeof entry !== "string" || entry.trim() !== "")
+  ) as T;
+}
+
 /**
  * Admin edit. A converted draft is locked, except while recovery is open
  * (FDR decision 138): its corrections feed the NEXT submission only. Frozen
@@ -390,8 +399,8 @@ export async function editIntakeDraft(
   }
 
   const nextPayload: IntakeDraftPayload = JSON.parse(JSON.stringify(draft.payload));
-  if (edit.business !== undefined) nextPayload.business = edit.business;
-  if (edit.designPreferences !== undefined) nextPayload.designPreferences = edit.designPreferences;
+  if (edit.business !== undefined) nextPayload.business = withoutBlankFields(edit.business);
+  if (edit.designPreferences !== undefined) nextPayload.designPreferences = withoutBlankFields(edit.designPreferences);
   if (edit.imageImport !== undefined) {
     if (edit.imageImport === null) delete nextPayload.imageImport;
     else nextPayload.imageImport = edit.imageImport;
