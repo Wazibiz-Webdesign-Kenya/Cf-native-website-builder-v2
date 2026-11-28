@@ -154,6 +154,7 @@ export default defineWorkersConfig({
       "tests/v2-image-pipeline.test.ts",
       "tests/v2-image-import.test.ts",
       "tests/v2-photo-catalog.test.ts",
+      "tests/v2-ai-structural-completion.test.ts",
       "tests/v2-form-service.test.ts",
       "tests/v2-form-browser-transport.test.ts",
       "tests/v2-assembly-preview.test.ts",
