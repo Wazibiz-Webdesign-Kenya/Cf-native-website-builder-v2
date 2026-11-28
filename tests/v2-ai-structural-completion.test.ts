@@ -78,10 +78,21 @@ describe("structural completion of an early-ended reply", () => {
     expect(prompts).toHaveLength(2);
   });
 
-  it("keeps the ordinary structural repair when what is present is itself wrong", async () => {
-    const { result, prompts } = await run([{ title: "T", chrome: { header: 5, footer: "F" } }, COMPLETE]);
+  it("redoes only the section that broke a constraint, showing the model what it wrote", async () => {
+    const { result, prompts } = await run([
+      { ...COMPLETE, chrome: { header: 5, footer: "F" } },
+      { chrome: COMPLETE.chrome, pages: "rewritten" },
+    ]);
     expect((await result).value).toEqual(COMPLETE);
-    expect(prompts[1]).toContain("## Targeted structural repair");
+    expect(prompts[1]).toContain("ONLY these top-level properties: chrome.");
+    expect(prompts[1]).toContain("/chrome/header: Expected string");
+    expect(prompts[1]).toContain('{"chrome":{"header":5,"footer":"F"}}');
+  });
+
+  it("asks for the whole document again when nothing in the reply is sound", async () => {
+    const { result, prompts } = await run([{ title: 5 }, COMPLETE]);
+    expect((await result).value).toEqual(COMPLETE);
+    expect(prompts[1]).toContain("Return ONLY the corrected JSON object");
     expect(prompts[1]).not.toContain("ONLY these top-level properties");
   });
 });
