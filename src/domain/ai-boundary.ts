@@ -333,32 +333,45 @@ export function renestMisplacedKeys(schema: TSchema, value: unknown): unknown {
   return out;
 }
 
-interface EarlyEndedReply {
-  present: Record<string, unknown>;
-  missing: string[];
+interface PartlyValidReply {
+  /** Top-level properties that satisfy the schema; the repair cannot alter them. */
+  kept: Record<string, unknown>;
+  /** Top-level properties that are missing or invalid. */
+  redo: string[];
+  /** The invalid properties as the model wrote them. */
+  previous: Record<string, unknown>;
 }
 
-/** Everything the reply contains is valid and only whole top-level properties
- *  are absent: the object was closed before it was finished. */
-function earlyEndedReply(schema: TSchema, value: unknown): EarlyEndedReply | null {
+/** A reply with sound top-level properties beside missing or invalid ones: a
+ *  document closed too early, or one section that breaks a constraint. */
+function partlyValidReply(schema: TSchema, value: unknown): PartlyValidReply | null {
   if (!isObjectSchema(schema) || !isPlainObject(value)) return null;
-  const missing = (schema.required ?? []).filter((key) => !(key in value));
-  if (missing.length === 0 || Object.keys(value).length === 0) return null;
+  const faulty = new Set((schema.required ?? []).filter((key) => !(key in value)));
   for (const error of Value.Errors(schema, value)) {
-    if (!missing.includes(error.path.split("/")[1] ?? "")) return null;
+    const key = error.path.split("/")[1] ?? "";
+    if (key in schema.properties) faulty.add(key);
   }
-  return { present: value, missing };
+  const kept = Object.fromEntries(Object.entries(value).filter(([key]) => key in schema.properties && !faulty.has(key)));
+  if (faulty.size === 0 || Object.keys(kept).length === 0) return null;
+  const redo = Object.keys(schema.properties).filter((key) => faulty.has(key));
+  return { kept, redo, previous: Object.fromEntries(redo.filter((key) => key in value).map((key) => [key, value[key]])) };
 }
 
-function completionPrompt(schema: ObjectSchema, reply: EarlyEndedReply): string {
-  const wanted = Object.fromEntries(reply.missing.map((key) => [key, schema.properties[key]]));
-  return `## Targeted structural repair: finish your previous response
+function partialRepairPrompt(schema: ObjectSchema, reply: PartlyValidReply, errorSummary: string): string {
+  const wanted = Object.fromEntries(reply.redo.map((key) => [key, schema.properties[key]]));
+  const previous = Object.keys(reply.previous).length
+    ? `\nYour previous version of the ones that broke the schema (correct them, keeping their intent):\n${JSON.stringify(reply.previous)}\n`
+    : "";
+  return `## Targeted structural repair: correct or finish your previous response
 
-Your previous response closed the JSON object before it was complete. Everything below is valid and is KEPT exactly as written:
-${JSON.stringify(reply.present)}
+Your previous response failed runtime schema validation:
+${errorSummary}
 
-Return ONE JSON object containing ONLY these top-level properties: ${reply.missing.join(", ")}. Keep them consistent with the work above, include every one of them, and close the object only after the last. Schema for this object:
-${JSON.stringify({ type: "object", additionalProperties: false, required: reply.missing, properties: wanted })}`;
+These top-level properties are valid and are KEPT exactly as written:
+${JSON.stringify(reply.kept)}
+${previous}
+Return ONE JSON object containing ONLY these top-level properties: ${reply.redo.join(", ")}. Keep them consistent with the kept work, include every one of them, and close the object only after the last. Schema for this object:
+${JSON.stringify({ type: "object", additionalProperties: false, required: reply.redo, properties: wanted })}`;
 }
 
 export function rejectedReplyKey(buildId: string, buildVersionNumber: number, stage: string, runId: string, attempt: number): string {
@@ -462,17 +475,17 @@ export async function runSchemaValidatedAiStage<T>(
     ? ""
     : `\n\n## Output contract\nReturn ONE JSON object that satisfies this JSON Schema exactly (no extra properties, every required property present, correct types). Do not wrap it in markdown or prose:\n${JSON.stringify(options.schema)}`;
 
-  // Set when attempt 1 ended early: the ONE repair then completes it.
-  let unfinished: EarlyEndedReply | null = null;
+  // Set when part of attempt 1 is sound: the ONE repair then redoes the rest.
+  let partial: PartlyValidReply | null = null;
 
   for (let attempt = 1; attempt <= 2 && !accepted; attempt++) {
     const userPrompt =
       attempt === 1
         ? options.userPrompt + outputContract
-        : unfinished
+        : partial
           ? `${options.userPrompt}
 
-${completionPrompt(options.schema as ObjectSchema, unfinished)}`
+${partialRepairPrompt(options.schema as ObjectSchema, partial, attempts[0]?.errorSummary ?? "schema validation failed")}`
           : `${options.userPrompt}${outputContract}
 
 ## Targeted structural repair
@@ -494,19 +507,19 @@ Return ONLY the corrected JSON object. Do not change the semantic content beyond
       errorSummary = parsed.error;
     } else {
       let normalized = stripEmptyStrings(stripNulls(parsed.value));
-      if (unfinished && isPlainObject(normalized)) {
-        // Only the missing properties are taken: the kept work cannot change.
-        const added = normalized;
+      if (partial && isPlainObject(normalized)) {
+        // Only the requested properties are taken: the kept work cannot change.
+        const reply = normalized;
         normalized = {
-          ...unfinished.present,
-          ...Object.fromEntries(unfinished.missing.filter((key) => key in added).map((key) => [key, added[key]])),
+          ...partial.kept,
+          ...Object.fromEntries(partial.redo.filter((key) => key in reply).map((key) => [key, reply[key]])),
         };
       }
       const candidate = truncateOverLongStrings(options.schema, renestMisplacedKeys(options.schema, normalized)).value;
       if (!Value.Check(options.schema, candidate)) {
         outcome = "invalid";
         errorSummary = schemaErrorSummary(options.schema, candidate);
-        if (attempt === 1) unfinished = earlyEndedReply(options.schema, candidate);
+        if (attempt === 1) partial = partlyValidReply(options.schema, candidate);
       } else {
         value = candidate as T;
         outcome = attempt === 1 ? "valid" : "repaired";

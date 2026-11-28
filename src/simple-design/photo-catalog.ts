@@ -172,7 +172,7 @@ export function renderPhotoCatalogForBlueprint(catalog: PhotoCatalog): string {
 SUPPLIED PHOTOGRAPHS (real photos from the business, described by inspection):
 ${lines}
 
-${scope} For every slot that uses a supplied photo, begin that slot's kiePrompt with the matching tag, for example "[PHOTO 3]", and write its altText to match that photo.`;
+${scope} The schema's limit still applies: at most 12 entries in imagery.supportingImageSlots, in addition to the four page heroes. You do not need to use every photo; fewer, well-chosen slots are better. For every slot that uses a supplied photo, begin that slot's kiePrompt with the matching tag, for example "[PHOTO 3]", and write its altText to match that photo.`;
 }
 
 export interface PlacedPhoto {
