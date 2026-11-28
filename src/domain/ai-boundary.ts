@@ -299,6 +299,10 @@ function stripEmptyStrings(value: unknown): unknown {
   return value;
 }
 
+export function rejectedReplyKey(buildId: string, buildVersionNumber: number, stage: string, runId: string, attempt: number): string {
+  return `builds/${buildId}/v${buildVersionNumber}/ai-rejected/${stage}-${runId}-attempt${attempt}.txt`;
+}
+
 export function schemaErrorSummary(schema: TSchema, value: unknown): string {
   const issues: string[] = [];
   for (const error of Value.Errors(schema, value)) {
@@ -431,6 +435,20 @@ Return ONLY the corrected JSON object. Do not change the semantic content beyond
     }
 
     attempts.push({ attempt, outcome, errorSummary });
+
+    // A rejected reply is the only evidence of WHY it was rejected; without it
+    // a recurring schema failure cannot be diagnosed (2026-11-24 and -28
+    // Blueprint failures). Diagnostic only: it never feeds any stage, and a
+    // failed write never changes the stage outcome.
+    if (outcome === "invalid") {
+      try {
+        await putImmutableObject(env, rejectedReplyKey(options.buildId, options.buildVersionNumber, options.stage, runId, attempt), raw.content, {
+          customMetadata: { finishReason: raw.finishReason ?? "unreported", length: String(raw.content.length) },
+        });
+      } catch (error) {
+        console.warn(`could not retain rejected ${options.stage} reply: ${(error as Error).message}`);
+      }
+    }
 
     await env.DB.prepare(
       `INSERT INTO ai_stage_runs (
