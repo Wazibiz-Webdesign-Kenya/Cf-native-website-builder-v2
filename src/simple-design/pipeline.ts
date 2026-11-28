@@ -71,7 +71,7 @@ import {
 import type { BuilderFileKind } from "./builder-file-realization";
 import type { SimpleBuilderVisualInput } from "./contracts";
 import { runSimpleVisualQaStage } from "./visual-qa";
-import { runSimpleSiteRepairStage } from "./site-repair";
+import { runSimpleSiteRepairStage, SimpleRepairRejectedError } from "./site-repair";
 import {
   PhotoCatalogError,
   ensurePhotoCatalog,
@@ -172,15 +172,44 @@ async function loadBundle(env: Env, buildVersionId: string): Promise<SiteBundle 
   return stored?.value ?? null;
 }
 
-// ONE repair per Build, total (#14): within a Build, only the bounded repair
-// ever creates an additional immutable Build Version (createNextBuildVersion
-// has no other caller), so the version count is the durable repair-budget
-// truth — engine-retry-safe and readable from any resumed entry.
-async function countBuildVersions(env: Env, buildId: string): Promise<number> {
-  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM build_versions WHERE build_id = ?")
-    .bind(buildId)
-    .first<{ n: number }>();
-  return row?.n ?? 0;
+type VersionRef = { buildVersionId: string; buildVersionNumber: number };
+
+// The version a run starts from: the newest one that has work on it (a site
+// bundle, or a decided pre-QA repair), else the first. A repair version that
+// exists but is still empty is NOT an entry point: starting there ran the full
+// Builder on it instead of the repair (live, 2026-11-28).
+async function resolveEntryVersion(env: Env, buildId: string): Promise<VersionRef> {
+  const { results } = await env.DB.prepare(
+    `SELECT v.id, v.version_number,
+       EXISTS (SELECT 1 FROM build_stage_artifacts a WHERE a.build_version_id = v.id AND a.kind IN ('site_bundle', ?)) AS has_work
+     FROM build_versions v WHERE v.build_id = ? ORDER BY v.version_number`
+  )
+    .bind(PRE_QA_REPAIR_PLAN_ARTIFACT_KIND, buildId)
+    .all<{ id: string; version_number: number; has_work: number }>();
+  const row = [...results].reverse().find((candidate) => candidate.has_work) ?? results[0];
+  if (!row) throw new Error(`Build ${buildId} has no Build Version`);
+  return { buildVersionId: row.id, buildVersionNumber: row.version_number };
+}
+
+/** Create Build Version `versionNumber`, or adopt it if an earlier attempt
+ *  already did. Callers name the number they need, so a replay or a step retry
+ *  can never mint an extra version. */
+async function ensureBuildVersion(
+  env: Env,
+  buildId: string,
+  versionNumber: number,
+  cause: Parameters<typeof createNextBuildVersion>[1]["cause"],
+  detail: string
+): Promise<VersionRef> {
+  const existing = await env.DB.prepare("SELECT id FROM build_versions WHERE build_id = ? AND version_number = ?")
+    .bind(buildId, versionNumber)
+    .first<{ id: string }>();
+  if (existing) return { buildVersionId: existing.id, buildVersionNumber: versionNumber };
+  const next = await createNextBuildVersion(env, { buildId, cause, detail });
+  if (next.buildVersionNumber !== versionNumber) {
+    throw new Error(`Build ${buildId}: expected to create v${versionNumber}, created v${next.buildVersionNumber}`);
+  }
+  return { buildVersionId: next.buildVersionId, buildVersionNumber: next.buildVersionNumber };
 }
 
 export async function runSimpleBuildPipeline(
@@ -230,15 +259,10 @@ export async function runSimpleBuildPipeline(
     // gates. ORIGINAL_DESIGN: Reference-only stages are SKIPPED — no
     // Reference, no fake empty artifacts; the frozen Onboarding Submission's
     // Creative Direction is the design-intent authority.
-    let version: { buildVersionId: string; buildVersionNumber: number } = await env.DB.prepare(
-      "SELECT id, version_number FROM build_versions WHERE build_id = ? ORDER BY version_number DESC LIMIT 1"
-    )
-      .bind(buildId)
-      .first<{ id: string; version_number: number }>()
-      .then((row) => {
-        if (!row) throw new Error(`Build ${buildId} has no Build Version`);
-        return { buildVersionId: row.id, buildVersionNumber: row.version_number };
-      });
+    // Decided ONCE inside a durable step: the engine replays this function
+    // after later versions exist, and every versioned step name below must
+    // come out the same as on the first pass.
+    const version: VersionRef = await stepDo("simple: entry version", () => resolveEntryVersion(env, buildId));
 
     // Non-null exactly for REFERENCE_BOUND; ORIGINAL_DESIGN has no Reference
     // evidence and never records a fake one (GO §30).
@@ -922,7 +946,8 @@ export async function runSimpleBuildPipeline(
       // implicated file — BEFORE QA. Without a mechanically identifiable
       // single-file target, or once the budget is spent, the terminal stays
       // FAILED exactly as before (no candidate to review, #62 §8/§9).
-      const repairSpent = (await countBuildVersions(env, buildId)) > 1;
+      // Starting past v1 means the version being built IS already a repair.
+      const repairSpent = version.buildVersionNumber > 1;
       const repairTarget = buildOutcome.repairTarget;
       if (repairTarget === null || repairSpent) {
         const disposition = repairTarget
@@ -1010,75 +1035,55 @@ export async function runSimpleBuildPipeline(
     async function runPreQaFileRepairAndContinue(
       failed: { reason: string; repairTarget: BuilderFileKind; gateFindings: string[] }
     ): Promise<SimplePipelineOutcome> {
-      // Durable repair-position truth: the latest version carries the repair.
-      const latest = await env.DB.prepare(
-        "SELECT id, version_number FROM build_versions WHERE build_id = ? ORDER BY version_number DESC LIMIT 1"
-      )
-        .bind(buildId)
-        .first<{ id: string; version_number: number }>();
-      if (!latest) throw new Error(`Build ${buildId} has no Build Version`);
-
-      let repairCtx: SimpleVersionContext;
-      if (latest.version_number === version.buildVersionNumber) {
-        const created = await stepDo("simple: pre-QA repair version", async () => {
-          const next = await createNextBuildVersion(env, {
-            buildId,
-            cause: "simple_pre_qa_repair",
-            detail: "SIMPLE pipeline ONE repair — pre-QA builder-file repair (issue #14 decision 2026-09-15)",
-          });
-          return { buildVersionId: next.buildVersionId, buildVersionNumber: next.buildVersionNumber };
-        });
-        await stepDo("simple: pre-QA repair inheritance", async () => {
-          // The plan freezes FIRST: a resumed entry must complete the bounded
-          // repair, never start a fresh Builder attempt (see the build step).
-          const plan: PreQaRepairPlan = {
-            targetKind: failed.repairTarget,
-            gateFindings: failed.gateFindings,
-            failedReason: failed.reason,
-          };
-          await storeBuildStageArtifactIdempotent(env, {
-            buildId,
-            buildVersionId: created.buildVersionId,
-            siteGenerationId: input.siteGenerationId,
-            kind: PRE_QA_REPAIR_PLAN_ARTIFACT_KIND,
-            schemaVersion: PRE_QA_REPAIR_PLAN_SCHEMA_VERSION,
-            value: plan,
-          });
-          await reuseAcceptedImages(env, version.buildVersionId, created.buildVersionId);
-          await storeBuildStageArtifactIdempotent(env, {
-            buildId,
-            buildVersionId: created.buildVersionId,
-            siteGenerationId: input.siteGenerationId,
-            kind: "design_blueprint",
-            schemaVersion: blueprintSchemaVersion,
-            value: blueprint,
-          });
-          await copyBuilderFileArtifacts(env, {
-            buildId,
-            siteGenerationId: input.siteGenerationId,
-            fromBuildVersionId: version.buildVersionId,
-            toBuildVersionId: created.buildVersionId,
-            exceptKind: failed.repairTarget,
-          });
-          return null;
-        });
-        repairCtx = {
-          siteGenerationId: input.siteGenerationId,
-          siteId,
+      const created = await stepDo("simple: pre-QA repair version", () =>
+        ensureBuildVersion(
+          env,
+          buildId,
+          version.buildVersionNumber + 1,
+          "simple_pre_qa_repair",
+          "SIMPLE pipeline ONE repair — pre-QA builder-file repair (issue #14 decision 2026-09-15)"
+        )
+      );
+      await stepDo("simple: pre-QA repair inheritance", async () => {
+        // The plan freezes FIRST: a resumed entry must complete the bounded
+        // repair, never start a fresh Builder attempt (see the build step).
+        const plan: PreQaRepairPlan = {
+          targetKind: failed.repairTarget,
+          gateFindings: failed.gateFindings,
+          failedReason: failed.reason,
+        };
+        await storeBuildStageArtifactIdempotent(env, {
           buildId,
           buildVersionId: created.buildVersionId,
-          buildVersionNumber: created.buildVersionNumber,
-        };
-      } else {
-        // A prior engine entry already created the repair version — resume it.
-        repairCtx = {
           siteGenerationId: input.siteGenerationId,
-          siteId,
+          kind: PRE_QA_REPAIR_PLAN_ARTIFACT_KIND,
+          schemaVersion: PRE_QA_REPAIR_PLAN_SCHEMA_VERSION,
+          value: plan,
+        });
+        await reuseAcceptedImages(env, version.buildVersionId, created.buildVersionId);
+        await storeBuildStageArtifactIdempotent(env, {
           buildId,
-          buildVersionId: latest.id,
-          buildVersionNumber: latest.version_number,
-        };
-      }
+          buildVersionId: created.buildVersionId,
+          siteGenerationId: input.siteGenerationId,
+          kind: "design_blueprint",
+          schemaVersion: blueprintSchemaVersion,
+          value: blueprint,
+        });
+        await copyBuilderFileArtifacts(env, {
+          buildId,
+          siteGenerationId: input.siteGenerationId,
+          fromBuildVersionId: version.buildVersionId,
+          toBuildVersionId: created.buildVersionId,
+          exceptKind: failed.repairTarget,
+        });
+        return null;
+      });
+      const repairCtx: SimpleVersionContext = {
+        siteGenerationId: input.siteGenerationId,
+        siteId,
+        buildId,
+        ...created,
+      };
 
       await appendBuildWorkflowEvent(env, {
         buildId,
@@ -1212,7 +1217,7 @@ export async function runSimpleBuildPipeline(
       // round 1 of the SAME bounded improving budget — a failing QA hands the
       // Build to the post-QA rounds loop instead of terminating here. The
       // loop's durable alignment picks up this version and its qa package.
-      return await runRepairAndFinalQa(final);
+      return await runRepairAndFinalQa(final, repairCtx);
     }
 
     // ── Bounded improving repair rounds (operator GO 2026-11-09, superseding
@@ -1225,84 +1230,58 @@ export async function runSimpleBuildPipeline(
     // HUMAN_REVIEW_REQUIRED exactly as before. Live evidence 2026-11-02..06:
     // one blind text-only round went 80→85 on the lucky build and 85→84
     // (worse) on the final one, with hard composition gates still failing.
-    async function runRepairAndFinalQa(first: QaOutcome): Promise<SimplePipelineOutcome> {
+    // `from` is the version `first` judged. Every later position follows from
+    // it, never from "the latest row in D1", so a replay walks the same rounds.
+    async function runRepairAndFinalQa(first: QaOutcome, from: VersionRef = version): Promise<SimplePipelineOutcome> {
       const maxRounds = Math.max(1, Math.min(3, Number.parseInt(env.SIMPLE_REPAIR_ROUNDS ?? "3", 10) || 3));
       let current = first;
       let sourceCtx: SimpleVersionContext = {
         siteGenerationId: input.siteGenerationId,
         siteId,
         buildId,
-        buildVersionId: version.buildVersionId,
-        buildVersionNumber: version.buildVersionNumber,
+        buildVersionId: from.buildVersionId,
+        buildVersionNumber: from.buildVersionNumber,
       };
       let lastVisualScore = current.pkg.visual?.scores.overall ?? null;
 
-      while (!current.releaseReady) {
-        // Durable repair-position truth: versions beyond v1 are repair rounds.
-        const latest = await env.DB.prepare(
-          "SELECT id, version_number FROM build_versions WHERE build_id = ? ORDER BY version_number DESC LIMIT 1"
-        )
-          .bind(buildId)
-          .first<{ id: string; version_number: number }>();
-        if (!latest) throw new Error(`Build ${buildId} has no Build Version`);
-
-        // Durable alignment (resume, operator GO 2026-11-11): a resumed engine
-        // entry must repair the LATEST bundled version with ITS qa package —
-        // never a stale v1 brief — and must honor the improvement baseline the
-        // previous entry already established: when the newest COMPLETED round
-        // did not improve on its predecessor, stop exactly as a fresh run
-        // would, without minting another version.
-        if (latest.version_number > 1) {
-          const latestPkg = await getBuildStageArtifact<QaPackage>(env, latest.id, "qa_package");
-          if (latestPkg && latestPkg.value.releaseReady === false) {
-            const newestScore = latestPkg.value.visual?.scores.overall ?? null;
-            const previous = latest.version_number > 1
-              ? await env.DB.prepare(
-                  "SELECT id FROM build_versions WHERE build_id = ? AND version_number = ?"
-                )
-                    .bind(buildId, latest.version_number - 1)
-                    .first<{ id: string }>()
-              : null;
-            const previousPkg = previous
-              ? await getBuildStageArtifact<QaPackage>(env, previous.id, "qa_package")
-              : null;
-            const previousScore = previousPkg?.value.visual?.scores.overall ?? null;
-            current = { releaseReady: false, reasons: latestPkg.value.reasons, pkg: latestPkg.value, evidenceR2Keys: [], previewUrl: current.previewUrl };
-            sourceCtx = {
-              siteGenerationId: input.siteGenerationId,
-              siteId,
-              buildId,
-              buildVersionId: latest.id,
-              buildVersionNumber: latest.version_number,
-            };
-            lastVisualScore = newestScore;
-            if (newestScore !== null && previousScore !== null && newestScore <= previousScore) {
-              await appendBuildWorkflowEvent(env, {
-                buildId,
-                buildVersionId: latest.id,
-                fromState: "CONFIRMATION",
-                toState: "HUMAN_REVIEW_REQUIRED",
-                stage: "simple_final_qa",
-                detail: `Final QA still failing after repair round ${latest.version_number - 1} and the visual score did not improve (${previousScore} → ${newestScore}): ${current.reasons.slice(0, 3).join("; ").slice(0, 240)}`,
-              });
-              return terminal("HUMAN_REVIEW_REQUIRED", current.reasons, {
-                artifactManifestHash: null,
-                previewUrl: current.previewUrl,
-                repairApplied: true,
-                builderStrategy,
-                designBlueprintR2Key: blueprintArtifactR2Key,
-              });
-            }
-          }
+      // Durable improvement baseline (resume, operator GO 2026-11-11): a run
+      // that starts on an already repaired version must not mint another one
+      // when that version did not improve on its predecessor.
+      if (!current.releaseReady && from.buildVersionNumber > 1 && lastVisualScore !== null) {
+        const previous = await env.DB.prepare("SELECT id FROM build_versions WHERE build_id = ? AND version_number = ?")
+          .bind(buildId, from.buildVersionNumber - 1)
+          .first<{ id: string }>();
+        const previousScore = previous
+          ? ((await getBuildStageArtifact<QaPackage>(env, previous.id, "qa_package"))?.value.visual?.scores.overall ?? null)
+          : null;
+        if (previousScore !== null && lastVisualScore <= previousScore) {
+          await appendBuildWorkflowEvent(env, {
+            buildId,
+            buildVersionId: from.buildVersionId,
+            fromState: "CONFIRMATION",
+            toState: "HUMAN_REVIEW_REQUIRED",
+            stage: "simple_final_qa",
+            detail: `Final QA still failing after repair round ${from.buildVersionNumber - 1} and the visual score did not improve (${previousScore} → ${lastVisualScore}): ${current.reasons.slice(0, 3).join("; ").slice(0, 240)}`,
+          });
+          return terminal("HUMAN_REVIEW_REQUIRED", current.reasons, {
+            artifactManifestHash: null,
+            previewUrl: current.previewUrl,
+            repairApplied: true,
+            builderStrategy,
+            designBlueprintR2Key: blueprintArtifactR2Key,
+          });
         }
+      }
 
-        const roundsUsed = latest.version_number - 1;
+      while (!current.releaseReady) {
+        // Versions beyond v1 are repair rounds.
+        const roundsUsed = sourceCtx.buildVersionNumber - 1;
         const roundNumber = roundsUsed + 1;
         if (roundsUsed >= maxRounds) {
           const reasons = [`repair budget exhausted after ${roundsUsed} round(s): ${current.reasons.slice(0, 3).join("; ").slice(0, 240)}`];
           await appendBuildWorkflowEvent(env, {
             buildId,
-            buildVersionId: latest.id,
+            buildVersionId: sourceCtx.buildVersionId,
             fromState: "CONFIRMATION",
             toState: "HUMAN_REVIEW_REQUIRED",
             stage: "simple_final_qa",
@@ -1316,48 +1295,38 @@ export async function runSimpleBuildPipeline(
           });
         }
 
-        let repairCtx: SimpleVersionContext;
-        if (latest.version_number === sourceCtx.buildVersionNumber) {
-          const created = await stepDo(`simple: repair version (v${roundNumber + 1})`, async () => {
-            const next = await createNextBuildVersion(env, {
-              buildId,
-              cause: "simple_repair_round",
-              detail: `SIMPLE pipeline repair round ${roundNumber} of at most ${maxRounds} (operator GO 2026-11-09)`,
-            });
-            return { buildVersionId: next.buildVersionId, buildVersionNumber: next.buildVersionNumber };
-          });
-          await stepDo(`simple: repair inheritance (v${created.buildVersionNumber})`, async () => {
-            await reuseAcceptedImages(env, sourceCtx.buildVersionId, created.buildVersionId);
-            await storeBuildStageArtifactIdempotent(env, {
-              buildId,
-              buildVersionId: created.buildVersionId,
-              siteGenerationId: input.siteGenerationId,
-              kind: "design_blueprint",
-              schemaVersion: blueprintSchemaVersion,
-              value: blueprint,
-            });
-            return null;
-          });
-          repairCtx = {
-            siteGenerationId: input.siteGenerationId,
-            siteId,
+        const created = await stepDo(`simple: repair version (v${roundNumber + 1})`, () =>
+          ensureBuildVersion(
+            env,
+            buildId,
+            roundNumber + 1,
+            "simple_repair_round",
+            `SIMPLE pipeline repair round ${roundNumber} of at most ${maxRounds} (operator GO 2026-11-09)`
+          )
+        );
+        await stepDo(`simple: repair inheritance (v${created.buildVersionNumber})`, async () => {
+          await reuseAcceptedImages(env, sourceCtx.buildVersionId, created.buildVersionId);
+          await storeBuildStageArtifactIdempotent(env, {
             buildId,
             buildVersionId: created.buildVersionId,
-            buildVersionNumber: created.buildVersionNumber,
-          };
-        } else {
-          // A prior engine entry already created this round's version — resume it.
-          repairCtx = {
             siteGenerationId: input.siteGenerationId,
-            siteId,
-            buildId,
-            buildVersionId: latest.id,
-            buildVersionNumber: latest.version_number,
-          };
-        }
+            kind: "design_blueprint",
+            schemaVersion: blueprintSchemaVersion,
+            value: blueprint,
+          });
+          return null;
+        });
+        const repairCtx: SimpleVersionContext = {
+          siteGenerationId: input.siteGenerationId,
+          siteId,
+          buildId,
+          ...created,
+        };
 
-        await stepDo(`simple: repair (v${repairCtx.buildVersionNumber})`, async () => {
-          const repaired = await runSimpleSiteRepairStage(env, {
+        // A rejection is returned, not thrown: it is this round's recorded
+        // outcome, never something for the engine to retry.
+        const rejected = await stepDo(`simple: repair (v${repairCtx.buildVersionNumber})`, async (): Promise<string[] | null> => {
+          const repair = runSimpleSiteRepairStage(env, {
             siteGenerationId: input.siteGenerationId,
             buildId,
             buildVersionId: repairCtx.buildVersionId,
@@ -1378,6 +1347,13 @@ export async function runSimpleBuildPipeline(
             ...(deps.visionGenerate ? { generate: deps.visionGenerate } : {}),
             ...(deps.generate ? { generate: deps.generate } : {}),
           });
+          let repaired: Awaited<typeof repair>;
+          try {
+            repaired = await repair;
+          } catch (error) {
+            if (error instanceof SimpleRepairRejectedError) return error.failures;
+            throw error;
+          }
           await appendBuildWorkflowEvent(env, {
             buildId,
             buildVersionId: repairCtx.buildVersionId,
@@ -1388,6 +1364,28 @@ export async function runSimpleBuildPipeline(
           });
           return null;
         });
+
+        if (rejected) {
+          const reasons = [
+            `repair round ${roundNumber} rejected: it broke the page structure, so Build Version v${sourceCtx.buildVersionNumber} remains the latest candidate`,
+            ...rejected,
+            ...current.reasons,
+          ];
+          await appendBuildWorkflowEvent(env, {
+            buildId,
+            buildVersionId: repairCtx.buildVersionId,
+            fromState: "CONFIRMATION",
+            toState: "HUMAN_REVIEW_REQUIRED",
+            stage: "simple_repair",
+            detail: reasons.join("; ").slice(0, 400),
+          });
+          return terminal("HUMAN_REVIEW_REQUIRED", reasons, {
+            repairApplied: sourceCtx.buildVersionNumber > 1,
+            builderStrategy,
+            designBlueprintR2Key: blueprintArtifactR2Key,
+            previewUrl: current.previewUrl,
+          });
+        }
 
         const repairedBundle = await loadBundle(env, repairCtx.buildVersionId);
         if (!repairedBundle) {

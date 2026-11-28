@@ -85,7 +85,7 @@ export const PROMPT_MANIFEST: Record<PromptStageKey, PromptManifestEntry> = {
   // ontology, region graph, trait ledger or second design-analysis call.
   "simple-website-builder": {
     promptId: "simple-website-builder",
-    promptVersion: "v11",
+    promptVersion: "v12",
     bodyFile: "simple/02-website-builder.md",
   },
   // v3 (operator GO, 2026-11-09): visual QA attaches and judges the desktop

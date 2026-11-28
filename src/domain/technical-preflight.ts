@@ -50,6 +50,27 @@ function tagCounts(html: string, tag: string): number {
   return (html.match(new RegExp(`<${tag}[\\s>]`, "gi")) ?? []).length;
 }
 
+const BALANCED_TAGS = ["div", "section", "main", "header", "footer", "nav"];
+
+function structureChecks(pageId: string, html: string): Array<{ ok: boolean; detail: string }> {
+  const doc = html.toLowerCase();
+  return [
+    { ok: doc.includes("<!doctype html") && doc.includes("</html>"), detail: `${pageId}: incomplete document` },
+    ...BALANCED_TAGS.map((tag) => {
+      const opened = tagCounts(html, tag);
+      const closed = (html.match(new RegExp(`</${tag}>`, "gi")) ?? []).length;
+      return { ok: opened === closed, detail: `${pageId}: <${tag}> opened ${opened}x but closed ${closed}x` };
+    }),
+  ];
+}
+
+/** What is structurally broken in one page document; empty when sound. */
+export function htmlStructureFailures(pageId: string, html: string): string[] {
+  return structureChecks(pageId, html)
+    .filter((entry) => !entry.ok)
+    .map((entry) => entry.detail);
+}
+
 export function runTechnicalPreflight(
   candidate: PreflightCandidate,
   context: PreflightContext
@@ -63,13 +84,8 @@ export function runTechnicalPreflight(
     checks.push(check("MISSING_CORE_PAGE", typeof html === "string" && html.length > 0, `page '${pageId}' missing`, ));
     if (typeof html !== "string" || html.length === 0) continue;
 
-    const doc = html.toLowerCase();
-    checks.push(check("MALFORMED_HTML", doc.includes("<!doctype html") && doc.includes("</html>"), `${pageId}: incomplete document`));
-
-    for (const tag of ["div", "section", "main", "header", "footer", "nav"]) {
-      const opened = tagCounts(html, tag);
-      const closed = (html.match(new RegExp(`</${tag}>`, "gi")) ?? []).length;
-      checks.push(check("MALFORMED_HTML", opened === closed, `${pageId}: <${tag}> opened ${opened}x but closed ${closed}x`));
+    for (const entry of structureChecks(pageId, html)) {
+      checks.push(check("MALFORMED_HTML", entry.ok, entry.detail));
     }
 
     const h1 = tagCounts(html, "h1");
