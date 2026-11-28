@@ -129,6 +129,30 @@ export function applyJsonLd(html: string, data: Record<string, unknown> | null):
   return stripped.replace(/<\/head>/i, (match) => `<script type="application/ld+json">${json}</script>${match}`);
 }
 
+// ── Contact form ────────────────────────────────────────────────────────────
+
+const ENQUIRY_FORM = /<form\b[^>]*\/api\/v2\/forms\/submit[^>]*>[\s\S]*?<\/form>/gi;
+const FIELD_TAG = /<input\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
+const REACH_FIELD = /\sname\s*=\s*["'](?:phone|email)["']/i;
+
+/** Drops a real `required` attribute, never the word inside a quoted value. */
+function withoutRequired(tag: string): string {
+  return tag.replace(/("[^"]*"|'[^']*')|\s+required(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s/>]+))?(?=[\s/>])/gi, (_, quoted?: string) => quoted ?? "");
+}
+
+/**
+ * The Form Service accepts a phone number OR an email. HTML cannot express
+ * "one of", so when the form has both, neither may be individually required;
+ * the platform script enforces the pair and the server validates it.
+ */
+export function applyContactReachability(html: string): string {
+  return html.replace(ENQUIRY_FORM, (form) => {
+    const names = (form.match(FIELD_TAG) ?? []).map((tag) => REACH_FIELD.exec(tag)?.[0].toLowerCase() ?? "");
+    if (!names.some((name) => name.includes("phone")) || !names.some((name) => name.includes("email"))) return form;
+    return form.replace(FIELD_TAG, (tag) => (REACH_FIELD.test(tag) ? withoutRequired(tag) : tag));
+  });
+}
+
 // ── Images ──────────────────────────────────────────────────────────────────
 
 const SIZED_MARKER = "data-wz-sized";

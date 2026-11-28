@@ -130,6 +130,16 @@ export const PLATFORM_SITE_SCRIPT = `
       return waLink(number, lines.join('\\n'));
     }
 
+    /* Phone or email: HTML cannot say "one of", so it is enforced here. */
+    var phoneField = form.querySelector('input[name="phone"]');
+    var emailField = form.querySelector('input[name="email"]');
+    function requireReachable() {
+      if (!phoneField || !emailField) return;
+      var reachable = phoneField.value.trim() || emailField.value.trim();
+      phoneField.setCustomValidity(reachable ? '' : 'Add a phone number or an email address so we can reply.');
+    }
+    form.addEventListener('input', requireReachable);
+
     /* No-JS fallback outcome (server redirects back with ?form=...). */
     var outcome = /[?&]form=(sent|error)/.exec(location.search);
     if (outcome) {
@@ -145,6 +155,7 @@ export const PLATFORM_SITE_SCRIPT = `
       // listener and the browser's navigation.
       event.preventDefault();
       event.stopImmediatePropagation();
+      requireReachable();
       if (form.reportValidity && !form.reportValidity()) return;
 
       var data = {};
