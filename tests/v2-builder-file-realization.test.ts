@@ -184,7 +184,7 @@ describe("stage discipline: SIX calls, one semantic generation each (GO §4)", (
   it("§3 the prompt contract is v8 and carries the raw-output discipline", () => {
     const composed = composeStagePrompt("simple-website-builder");
     expect(composed.promptVersion).toBe("v12");
-    // Decision 141: the two defects the live Tibz build was first written with.
+    // Decision 141: the two defects a live build was first written with.
     expect(composed.systemPrompt).toContain("NEVER write how or when the business replies");
     expect(composed.systemPrompt).toContain("NEVER write who its guests, clients or customers are");
     expect(composed.systemPrompt).toContain("HEADER AND HERO TEXT MUST READ ON MOBILE");
