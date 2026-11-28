@@ -26,12 +26,22 @@ import {
 } from "./contracts";
 import { bytesToBase64, createSimpleVisionGenerate, mimeForKey } from "./vision";
 import { SIMPLE_PAGE_FILES } from "./bundle-qa";
+import { htmlStructureFailures } from "../domain/technical-preflight";
 import type { SimpleBuilderVisualInput } from "./contracts";
 
 export class SimpleRepairBudgetExceededError extends Error {
   constructor() {
     super("the SIMPLE pipeline allows at most ONE semantic repair call per Build");
     this.name = "SimpleRepairBudgetExceededError";
+  }
+}
+
+/** A repair whose changed pages are structurally broken is discarded: nothing
+ *  is stored, so it can never become the site the next round builds on. */
+export class SimpleRepairRejectedError extends Error {
+  constructor(readonly failures: string[]) {
+    super(`the repair broke the page structure: ${failures.join("; ")}`);
+    this.name = "SimpleRepairRejectedError";
   }
 }
 
@@ -320,6 +330,11 @@ export async function runSimpleSiteRepairStage(env: Env, input: RunSimpleSiteRep
 
   const repairedFiles = (run.value as { files: RepairedFile[] }).files;
   const { bundle, changedPaths } = mergeRepairedFiles(input.bundle, repairedFiles);
+  const broken = changedPaths.flatMap((path) => {
+    const page = REPAIR_FILE_TO_PAGE[path];
+    return page ? htmlStructureFailures(page, bundle.pages[page]) : [];
+  });
+  if (broken.length > 0) throw new SimpleRepairRejectedError(broken);
   // Stored on the NEW Build Version the pipeline created for this repair —
   // a material repair is a new immutable Build Version, never a mutation.
   const stored = await storeBuildStageArtifactIdempotent(env, {

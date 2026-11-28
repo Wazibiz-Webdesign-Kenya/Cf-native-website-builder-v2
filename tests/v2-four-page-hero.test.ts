@@ -326,7 +326,7 @@ describe("Nano Banana screen-free adaptation covers every page hero", () => {
 describe("Mobile hero mass rule ships in the builder prompt", () => {
   it("the composed builder prompt contains the hero media rule and the mobile 35-50svh floor", async () => {
     const composed = composeStagePrompt("simple-website-builder");
-    expect(composed.promptVersion).toBe("v11");
+    expect(composed.promptVersion).toBe("v12");
     expect(composed.systemPrompt).toContain("FOUR-PAGE HERO MEDIA");
     expect(composed.systemPrompt).toContain("35–50svh");
     const blueprint = composeStagePrompt("simple-design-blueprint");

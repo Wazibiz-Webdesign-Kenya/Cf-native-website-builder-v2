@@ -184,6 +184,7 @@ export default defineWorkersConfig({
       "tests/v2-simple-hero-canonicalization.test.ts",
       "tests/v2-simple-bundle-qa.test.ts",
       "tests/v2-simple-pipeline.test.ts",
+      "tests/v2-repair-replay.test.ts",
       "tests/v2-simple-finch-fixture.test.ts",
       "tests/v2-simple-streaming-transport.test.ts",
       "tests/v2-simple-hardening.test.ts",
